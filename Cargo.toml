@@ -1,0 +1,18 @@
+[package]
+name = "wgpui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = "1.23.2"
+env_logger = "0.11.8"
+futures = "0.3.31"
+glam = { version = "0.30.5", features = ["bytemuck"] }
+macros = { path = "./macros" }
+log = "0.4.27"
+pollster = "0.4.0"
+wasm-bindgen = "0.2.100"
+wgpu = "26.0.1"
+winit = "0.30.12"
+rustc-hash = "2.1.1"
+bitflags = "2.9.2"
