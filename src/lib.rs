@@ -4,29 +4,30 @@ mod rect;
 mod ui;
 mod utils;
 
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
-use glam::{UVec2, Vec2, Vec3, Vec4};
-use gpu::{ResourceCache, WGPU};
+use glam::Vec4;
+use gpu::{VertexDesc, WGPU};
+use macros::vertex;
 use utils::RGBA;
 use wgpu::util::DeviceExt;
-
-pub use gpu::Vertex;
-pub use macros::vertex_struct;
 
 pub extern crate self as wgpui;
 
 pub use gpu::AsVertexFormat;
+pub use gpu::Vertex;
 
-vertex_struct!(VertexPosCol {
-    pos(0): Vec4,
-    col(1): RGBA,
-});
+// vertex_struct!(VertexPosCol {
+//     pos: Vec4,
+//     col: RGBA,
+// });
+//
+
+#[vertex]
+pub struct VertexPosCol {
+    pub pos: Vec4,
+    pub col: RGBA,
+}
 
 pub struct DbgTriangle {
     vertex_buffer: wgpu::Buffer,
@@ -74,7 +75,7 @@ impl RenderPassHandle for DbgTriangle {
         let col = ColorTint(self.color);
         // rpass.set_pipeline(&col.get_pipeline(wgpu));
         // rpass.set_pipeline(&col.get_vertex_pipeline::<ui::VertexRect>(wgpu));
-        rpass.set_pipeline(&col.get_vertex_pipeline::<VertexPosCol>(wgpu));
+        rpass.set_pipeline(&col.get_pipeline(&[(&VertexPosCol::desc(), "Vertex")], wgpu));
         rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         rpass.draw(0..3, 0..1);
     }
@@ -102,7 +103,7 @@ pub struct ColorTint(pub RGBA);
 impl ShaderHandle for ColorTint {
     const RENDER_PIPELINE_ID: ShaderID = "color_tint";
 
-    fn build_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> wgpu::RenderPipeline {
+    fn build_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
         const SHADER_SRC: &str = r#"
             struct VSOut {
                 @builtin(position) pos: vec4<f32>,
@@ -132,8 +133,8 @@ impl ShaderHandle for ColorTint {
             "#;
         let shader_src = SHADER_SRC.replace("$COLOR", &self.0.as_wgsl_vec4());
 
-        let prcs = V::process_shader_code(&shader_src, "Vertex");
-        let src = match &prcs {
+        // let prcs = V::process_shader_code(&shader_src, "Vertex");
+        let src = match gpu::process_shader_code(&shader_src, desc) {
             Ok(prcs_src) => prcs_src,
             Err(err) => {
                 log::error!("could not process shader: {err}");
@@ -141,9 +142,10 @@ impl ShaderHandle for ColorTint {
             }
         };
 
+        let vertices = desc.iter().map(|d| d.0).collect::<Vec<_>>();
         gpu::PipelineBuilder::new(&src, wgpu.surface_format)
-            .label("debug_triangle_pipeline")
-            .vertex_buffers(&[V::buffer_layout()])
+            .label("color_tint_triangle_pipeline")
+            .vertex_buffers(&vertices)
             .build(&wgpu.device)
     }
 }
@@ -151,9 +153,18 @@ impl ShaderHandle for ColorTint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UUID(pub u64);
 
+pub type ShaderGenerics<'a> = [(&'a VertexDesc, &'a str)];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShaderTyp {
+    Vertex,
+    Instance,
+    Uniform,
+}
+
 pub trait ShaderHandle {
     const RENDER_PIPELINE_ID: ShaderID;
-    fn build_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> wgpu::RenderPipeline;
+    fn build_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline;
 
     fn pipeline_generic_id() -> UUID {
         use std::hash::{Hash, Hasher};
@@ -162,12 +173,14 @@ pub trait ShaderHandle {
         UUID(hasher.finish())
     }
 
-    fn pipeline_vertex_id<V: Vertex>() -> UUID {
+    fn pipeline_vertex_id(desc: &ShaderGenerics<'_>) -> UUID {
         use std::hash::{Hash, Hasher};
         let mut hasher = rustc_hash::FxHasher::default();
         Self::RENDER_PIPELINE_ID.hash(&mut hasher);
-        V::VERTEX_ATTRIBUTES.hash(&mut hasher);
-        V::VERTEX_MEMBERS.hash(&mut hasher);
+        for (d, _) in desc {
+            d.attributes.hash(&mut hasher);
+            d.members.hash(&mut hasher);
+        }
         UUID(hasher.finish())
     }
 
@@ -175,30 +188,30 @@ pub trait ShaderHandle {
         false
     }
 
-    fn try_rebuild<V: Vertex>(&self, wgpu: &WGPU) {
+    fn try_rebuild(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) {
         log::info!(
-            "[pipeline] {}: rebuild for vertex ({})",
+            "[pipeline] {}: rebuild for vertex ({:?})",
             Self::RENDER_PIPELINE_ID,
-            V::VERTEX_LABEL
+            desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
         );
         wgpu.register_pipeline(
-            Self::pipeline_vertex_id::<V>(),
-            self.build_pipeline::<V>(wgpu),
+            Self::pipeline_vertex_id(desc),
+            self.build_pipeline(desc, wgpu),
         );
     }
 
-    fn get_vertex_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+    fn get_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
         if self.should_rebuild() {
-            self.try_rebuild::<V>(wgpu);
-            // wgpu.register_pipeline(Self::pipeline_vertex_id::<V>(), self.build_pipeline::<V>(wgpu))
+            self.try_rebuild(desc, wgpu);
         }
-        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id::<V>(), || {
+
+        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id(desc), || {
             log::info!(
-                "[pipeline] {}: build for vertex ({})",
+                "[pipeline] {}: build for vertex ({:?})",
                 Self::RENDER_PIPELINE_ID,
-                V::VERTEX_LABEL
+                desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
             );
-            self.build_pipeline::<V>(wgpu)
+            self.build_pipeline(desc, wgpu)
         })
     }
 

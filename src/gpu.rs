@@ -4,26 +4,171 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{RenderTarget, UUID, utils};
+use crate::{RenderTarget, ShaderGenerics, UUID, utils};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VertexDesc {
+    pub label: &'static str,
+    pub attributes: Vec<wgpu::VertexAttribute>,
+    pub members: Vec<&'static str>,
+    pub instanced: bool,
+    pub uniform: bool,
+    pub byte_size: usize,
+}
+
+pub fn process_shader_code(
+    code: &str,
+    // structs_desc: &[&VertexDesc; N],
+    structs_desc: &ShaderGenerics<'_>, // struct_names: &[&str; N],
+) -> Result<String, String> {
+    let reqs = PipelineRequirement::parse_all(code);
+
+    if reqs.len() != structs_desc.len() {
+        log::warn!(
+            "missmatch, required: {:?},\nfound: {:?}",
+            reqs,
+            structs_desc
+        );
+        return Err(format!(
+            "number of required structs ({}), must match number of provided descriptions ({})",
+            reqs.len(),
+            structs_desc.len()
+        ));
+    }
+
+    // check compatibility
+    for (req, (desc, name)) in reqs.iter().zip(structs_desc.iter()) {
+        if &req.name != name {
+            return Err(format!("expected: '{}', found: '{name}'", req.name));
+        }
+
+        if req.fields.len() < desc.members.len() && !req.allow_extra {
+            return Err(format!(
+                "requirement for '{}' does not allow variadic number of fields",
+                req.name
+            ));
+        }
+
+        for (field_name, req_typ) in &req.fields {
+            let found = desc
+                .members
+                .iter()
+                .zip(desc.attributes.iter())
+                .find(|(member_name, _)| *member_name == field_name);
+
+            let Some((_, attr)) = found else {
+                return Err(format!(
+                    "description '{name}' does not contain '{}'",
+                    field_name
+                ));
+            };
+
+            let Some(desc_wgsl_typ) = vertex_format_to_wgsl(attr.format) else {
+                return Err(format!("unsupported format: {:?}", attr.format));
+            };
+
+            if req_typ != desc_wgsl_typ {
+                return Err(format!(
+                    "type missmatch, expected: {req_typ}, found: {desc_wgsl_typ}"
+                ));
+            }
+        }
+    }
+
+    // remove @rust ...
+    let mut clean_code = String::new();
+    let mut chars = code.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '@' {
+            let remaining: String = chars.clone().collect();
+            if remaining.starts_with("rust struct") {
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        clean_code.push(ch);
+    }
+
+    // gen. wgsl structs
+
+    let mut wgsl_structs = String::new();
+    let mut location = 0;
+
+    for (desc, name) in structs_desc.iter() {
+        let mut struct_str = format!("\nstruct {name} {{\n");
+
+        for (attrib, member) in desc.attributes.iter().zip(&desc.members) {
+            let ty = vertex_format_to_wgsl(attrib.format).unwrap();
+            struct_str.push_str(&format!("@location({location}) {}: {},\n", member, ty));
+            location += 1;
+        }
+
+        wgsl_structs.push_str(&struct_str);
+        wgsl_structs.push_str("}\n");
+    }
+
+    let mut res = "\n//////////////// GENERATED ////////////////\n".to_string();
+    res.push_str(&wgsl_structs);
+    res.push_str("\n///////////////////////////////////////////\n\n");
+    res.push_str(&clean_code);
+
+    log::trace!("generated shader:\n{res}");
+
+    Ok(res)
+}
 
 pub trait Vertex: Sized + Copy + bytemuck::Pod + bytemuck::Zeroable {
     const VERTEX_LABEL: &'static str;
     const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute];
     const VERTEX_MEMBERS: &'static [&'static str];
 
-    fn vertex_attributes_offset(offset: u32) -> Vec<wgpu::VertexAttribute> {
-        Self::VERTEX_ATTRIBUTES
-            .iter()
-            .copied()
-            .map(|mut attrib| {
-                attrib.shader_location += offset;
-                attrib
-            })
-            .collect()
+    fn instance_desc() -> VertexDesc {
+        let mut desc = Self::desc();
+        desc.instanced = true;
+        desc
     }
 
+    fn uniform_desc() -> VertexDesc {
+        let mut desc = Self::desc();
+        desc.uniform = true;
+        desc
+    }
+
+    fn desc() -> VertexDesc {
+        VertexDesc {
+            label: Self::VERTEX_LABEL,
+            attributes: Self::VERTEX_ATTRIBUTES.to_vec(),
+            members: Self::VERTEX_MEMBERS.to_vec(),
+            instanced: false,
+            uniform: false,
+            byte_size: std::mem::size_of::<Self>(),
+        }
+    }
+
+    // fn vertex_attributes_offset(offset: u32) -> Vec<wgpu::VertexAttribute> {
+    //     Self::VERTEX_ATTRIBUTES
+    //         .iter()
+    //         .copied()
+    //         .map(|mut attrib| {
+    //             attrib.shader_location += offset;
+    //             attrib
+    //         })
+    //         .collect()
+    // }
+
     fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-        Self::buffer_layout_with_attributes(&Self::VERTEX_ATTRIBUTES)
+        Self::buffer_layout_with_attributes(Self::VERTEX_ATTRIBUTES)
+    }
+
+    fn instance_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        let mut layout = Self::buffer_layout();
+        layout.step_mode = wgpu::VertexStepMode::Instance;
+        layout
     }
 
     fn buffer_layout_with_attributes<'a>(
@@ -34,124 +179,6 @@ pub trait Vertex: Sized + Copy + bytemuck::Pod + bytemuck::Zeroable {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: attribs,
         }
-    }
-
-    fn as_wgsl_struct(name: &str) -> String {
-        assert_eq!(
-            Self::VERTEX_ATTRIBUTES.len(),
-            Self::VERTEX_MEMBERS.len(),
-            "VERTEX_ATTRIBUTES and VERTEX_MEMBERS must have the same length"
-        );
-
-        let mut out = format!("struct {} {{\n", name);
-        for (attr, member_name) in Self::VERTEX_ATTRIBUTES
-            .iter()
-            .zip(Self::VERTEX_MEMBERS.iter())
-        {
-            let ty = vertex_format_to_wgsl(attr.format)
-                .unwrap_or_else(|| panic!("Unsupported vertex format: {:?}", attr.format));
-            out.push_str(&format!(
-                "    @location({}) {}: {},\n",
-                attr.shader_location, member_name, ty
-            ));
-        }
-        out.push('}');
-        out
-    }
-
-    /// Process shader code by extracting requirements, checking compatibility, and injecting WGSL struct
-    fn process_shader_code(
-        shader_code: &str,
-        struct_name: &str,
-    ) -> Result<String, ShaderProcessingError> {
-        // Parse requirements from the shader
-        let requirements = PipelineRequirement::parse_requirements(shader_code);
-
-        // Check compatibility
-        Self::check_compatibility(&requirements)?;
-
-        // Remove rust requirements and inject WGSL struct
-        let cleaned_shader = Self::remove_rust_requirements(shader_code);
-        let wgsl_struct = Self::as_wgsl_struct(struct_name);
-
-        // Insert the WGSL struct at the beginning of the shader
-        Ok(format!("{}\n\n{}", wgsl_struct, cleaned_shader))
-    }
-
-    /// Check if this vertex type is compatible with the shader requirements
-    fn check_compatibility(
-        requirements: &[PipelineRequirement],
-    ) -> Result<(), ShaderProcessingError> {
-        for req in requirements {
-            if req.name == Self::VERTEX_LABEL || req.name == "Vertex" {
-                // Check if we have all required fields
-                for (field_name, expected_type) in &req.fields {
-                    let found = Self::VERTEX_MEMBERS
-                        .iter()
-                        .zip(Self::VERTEX_ATTRIBUTES.iter())
-                        .find(|(member_name, _)| *member_name == field_name);
-
-                    if let Some((_, attr)) = found {
-                        let actual_wgsl_type = vertex_format_to_wgsl(attr.format)
-                            .ok_or_else(|| ShaderProcessingError::UnsupportedFormat(attr.format))?;
-
-                        if actual_wgsl_type != expected_type {
-                            return Err(ShaderProcessingError::TypeMismatch {
-                                field: field_name.clone(),
-                                expected: expected_type.clone(),
-                                actual: actual_wgsl_type.to_string(),
-                            });
-                        }
-                    } else if !req.allow_extra {
-                        return Err(ShaderProcessingError::MissingField(field_name.clone()));
-                    }
-                }
-
-                // Check if we have extra fields that aren't allowed
-                if !req.allow_extra {
-                    for member_name in Self::VERTEX_MEMBERS {
-                        if !req.fields.contains_key(*member_name) {
-                            return Err(ShaderProcessingError::ExtraField(member_name.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Remove @rust struct requirements from shader code
-    fn remove_rust_requirements(shader_code: &str) -> String {
-        let mut result = String::new();
-        let mut chars = shader_code.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if ch == '@' {
-                // Check if this is the start of "@rust struct"
-                let remaining: String = chars.clone().collect();
-                if remaining.starts_with("rust struct") {
-                    // Skip until we find the closing brace
-                    while let Some(ch) = chars.next() {
-                        if ch == '}' {
-                            break;
-                        }
-                    }
-                    continue;
-                }
-            }
-            result.push(ch);
-        }
-
-        result
-    }
-
-    fn shader_uuid<P: crate::ShaderHandle>() -> UUID {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = rustc_hash::FxHasher::default();
-        P::RENDER_PIPELINE_ID.hash(&mut hasher);
-        Self::VERTEX_ATTRIBUTES.hash(&mut hasher);
-        Self::VERTEX_MEMBERS.hash(&mut hasher);
-        UUID(hasher.finish())
     }
 }
 
@@ -679,7 +706,8 @@ pub struct PipelineBuilder<'a> {
     pub shader_source: &'a str,
     pub vertex_entry: &'a str,
     pub fragment_entry: &'a str,
-    pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    // pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    pub vertex_buffers: &'a [&'a VertexDesc],
     pub bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
     pub surface_format: wgpu::TextureFormat,
     pub blend_state: Option<wgpu::BlendState>,
@@ -720,7 +748,7 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn vertex_buffers(mut self, buffers: &'a [wgpu::VertexBufferLayout<'a>]) -> Self {
+    pub fn vertex_buffers(mut self, buffers: &'a [&'a VertexDesc]) -> Self {
         self.vertex_buffers = buffers;
         self
     }
@@ -770,13 +798,49 @@ impl<'a> PipelineBuilder<'a> {
             bias: wgpu::DepthBiasState::default(),
         });
 
+        let mut buffer_layouts = Vec::new();
+        let mut location_offset = 0;
+
+        let mut vertices_attribs: Vec<_> = self
+            .vertex_buffers
+            .iter()
+            .filter_map(|desc| {
+                if !desc.uniform {
+                    Some(desc.attributes.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for vertex_attribs in &mut vertices_attribs {
+            vertex_attribs.iter_mut().enumerate().for_each(|(i, a)| {
+                a.shader_location = location_offset + i as u32;
+            });
+
+            location_offset += vertex_attribs.len() as u32;
+        }
+
+        for (desc, fixed_attribs) in self.vertex_buffers.iter().zip(vertices_attribs.iter()) {
+            let layout = wgpu::VertexBufferLayout {
+                array_stride: desc.byte_size as wgpu::BufferAddress,
+                step_mode: match desc.instanced {
+                    true => wgpu::VertexStepMode::Instance,
+                    false => wgpu::VertexStepMode::Vertex,
+                },
+                attributes: &*fixed_attribs,
+            };
+
+            buffer_layouts.push(layout);
+        }
+
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: self.label,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some(self.vertex_entry),
-                buffers: self.vertex_buffers,
+                buffers: &buffer_layouts,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -818,13 +882,14 @@ pub struct PipelineRequirement {
 }
 
 impl PipelineRequirement {
-    pub fn parse_requirements(src: &str) -> Vec<PipelineRequirement> {
+    pub fn parse_all(src: &str) -> Vec<PipelineRequirement> {
         let mut out = Vec::new();
         let mut search_start = 0;
 
-        while let Some(start) = src[search_start..].find("@rust struct") {
-            let absolute_start = search_start + start;
-            let rest = &src[absolute_start + "@rust struct".len()..];
+        // while let Some(start) = src[search_start..].find("@rust struct")
+        for (start, _) in src.match_indices("@rust struct") {
+            // let absolute_start = search_start + start;
+            let rest = &src[start + "@rust struct".len()..];
 
             // Parse struct name
             let rest = rest.trim_start();
@@ -864,7 +929,7 @@ impl PipelineRequirement {
                         allow_extra,
                     });
 
-                    search_start = absolute_start + "@rust struct".len() + rest_after_name.len();
+                    // search_start = absolute_start + "@rust struct".len() + rest_after_name.len();
                 } else {
                     break; // Malformed - no closing brace
                 }
@@ -876,44 +941,3 @@ impl PipelineRequirement {
         out
     }
 }
-
-#[derive(Debug, Clone)]
-pub enum ShaderProcessingError {
-    MissingField(String),
-    ExtraField(String),
-    TypeMismatch {
-        field: String,
-        expected: String,
-        actual: String,
-    },
-    UnsupportedFormat(wgpu::VertexFormat),
-}
-
-impl std::fmt::Display for ShaderProcessingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ShaderProcessingError::MissingField(field) => {
-                write!(f, "Missing required field: {}", field)
-            }
-            ShaderProcessingError::ExtraField(field) => {
-                write!(f, "Extra field not allowed: {}", field)
-            }
-            ShaderProcessingError::TypeMismatch {
-                field,
-                expected,
-                actual,
-            } => {
-                write!(
-                    f,
-                    "Type mismatch for field '{}': expected '{}', got '{}'",
-                    field, expected, actual
-                )
-            }
-            ShaderProcessingError::UnsupportedFormat(format) => {
-                write!(f, "Unsupported vertex format: {:?}", format)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ShaderProcessingError {}

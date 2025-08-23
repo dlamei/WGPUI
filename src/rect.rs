@@ -32,8 +32,8 @@ use glam::Vec2;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Rect {
-    min: Vec2,
-    max: Vec2,
+    pub min: Vec2,
+    pub max: Vec2,
 }
 
 const fn vec2(x: f32, y: f32) -> Vec2 {

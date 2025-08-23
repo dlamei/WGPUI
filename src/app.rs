@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use glam::UVec2;
+use glam::{UVec2, Vec2};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -13,9 +13,10 @@ use winit::{
 };
 
 use crate::{
-    ClearScreen, ColorTint, DbgTriangle, RenderTarget, ShaderHandle, VertexPosCol,
-    gpu::{Renderer, WGPU},
-    utils::RGBA,
+    ClearScreen, ColorTint, DbgTriangle, ShaderHandle, Vertex, VertexPosCol,
+    gpu::Renderer,
+    ui,
+    utils::{self, RGBA},
 };
 
 pub enum AppSetup {
@@ -46,9 +47,13 @@ impl AppSetup {
         let scale_factor = window.scale_factor() as f32;
 
         let wgpu = &renderer.wgpu;
+        let rect_render = ui::RectRender::new(wgpu);
 
         App {
+            mouse_pos: Vec2::ZERO,
+            ui: ui::State::default(),
             renderer,
+            rect_render,
             window,
             last_size: UVec2::ONE,
             prev_frame_time: Instant::now(),
@@ -73,9 +78,12 @@ impl AppSetup {
         let scale_factor = window_handle.scale_factor() as f32;
 
         let window_handle_2 = window_handle.clone();
-        let renderer = pollster::block_on(async move {
+        let renderer = utils::futures::wait_for(async move {
             Renderer::new_async(window_handle_2, size.width, size.height).await
         });
+        // let renderer = pollster::block_on(async move {
+        //     Renderer::new_async(window_handle_2, size.width, size.height).await
+        // });
 
         *self = Self::Init(Self::init_app(window_handle, renderer));
     }
@@ -137,16 +145,38 @@ impl ApplicationHandler for AppSetup {
 }
 
 pub struct App {
+    ui: ui::State,
     renderer: Renderer,
+
+    rect_render: ui::RectRender,
 
     prev_frame_time: Instant,
     delta_time: Duration,
+
+    mouse_pos: Vec2,
 
     last_size: UVec2,
     window: Arc<Window>,
 }
 
 impl App {
+    pub fn window_size(&self) -> UVec2 {
+        let size = self.window.inner_size();
+        (size.width, size.height).into()
+    }
+
+    pub fn width(&self) -> u32 {
+        self.window_size().x
+    }
+
+    pub fn height(&self) -> u32 {
+        self.window_size().y
+    }
+
+    pub fn aspect_ratio(&self) -> f32 {
+        self.width() as f32 / self.height() as f32
+    }
+
     fn on_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -161,6 +191,9 @@ impl App {
         self.on_update();
 
         match event {
+            WE::CursorMoved { position: pos, .. } => {
+                self.mouse_pos = (pos.x as f32, pos.y as f32).into();
+            }
             WE::RedrawRequested => {
                 self.on_redraw(event_loop);
             }
@@ -178,7 +211,38 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        // println!("{:#?}", self.renderer.wgpu.pipeline_cache);
+
+        self.ui.begin_node("window", |n| {
+            n.position((100.0, 100.0))
+                .fixed_size((self.mouse_pos.x, 300.0))
+                .child_gap(15.0)
+                .background_color(RGBA::RED)
+        });
+
+        self.ui.begin_node("a", |n| {
+            n.grow_x()
+                .fixed_size_y(30.0)
+                .background_color(RGBA::GREEN)
+        });
+
+        self.ui.begin_node("b", |n| {
+            n
+                .grow_x()
+                .background_color(RGBA::BLUE)
+        });
+
+
+
+        self.ui.end_node();
+        self.ui.end_node();
+
+        self.ui.end_node();
+        println!("{:#?}", self.ui);
+
+        let mut rects = self.ui.finish();
+        // println!("{}");
+        self.rect_render.update_rect_instances(&rects, &self.renderer.wgpu);
+
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
@@ -189,7 +253,7 @@ impl App {
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
                 let shader = ColorTint(RGBA::rand());
-                shader.try_rebuild::<VertexPosCol>(&self.renderer.wgpu);
+                shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
             }
             _ => (),
         }
@@ -220,10 +284,13 @@ impl App {
         {
             let clear_screen = ClearScreen("#242933".into());
             let dbg_tri = DbgTriangle::new((255, 50, 50).into(), &self.renderer.wgpu);
+            // let mut rect_rend = ui::RectRender::new(&self.renderer.wgpu);
+            self.rect_render.update_window_size(self.width(), self.height());
 
             let mut surface = self.renderer.surface_target();
             surface.render(&clear_screen);
-            surface.render(&dbg_tri);
+            // surface.render(&dbg_tri);
+            surface.render(&self.rect_render);
         }
         self.renderer.present_frame();
         self.window.request_redraw();

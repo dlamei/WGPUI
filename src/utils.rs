@@ -1,6 +1,6 @@
 use std::fmt;
 
-pub fn rand_f32() -> f32 {
+pub const fn rand_f32() -> f32 {
     static mut SEED: u32 = 123456789;
     unsafe {
         SEED = SEED.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -378,5 +378,83 @@ impl From<RGB> for (f32, f32, f32) {
 impl From<RGB> for [f32; 3] {
     fn from(c: RGB) -> Self {
         [c.r, c.g, c.b]
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod futures {
+    use std::sync::{Arc, Mutex};
+
+    enum State {
+        Idle,
+        Blocking,
+        Ready,
+    }
+
+    struct Signal {
+        state: Mutex<State>,
+        cond: std::sync::Condvar,
+    }
+
+    impl Signal {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new(State::Idle),
+                cond: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut state = self.state.lock().unwrap();
+            match *state {
+                State::Blocking => unreachable!(),
+                State::Ready => *state = State::Idle,
+                State::Idle => {
+                    *state = State::Blocking;
+                    while let State::Blocking = *state {
+                        state = self.cond.wait(state).unwrap();
+                    }
+                }
+            }
+        }
+
+        fn wake_(&self) {
+            let mut state = self.state.lock().unwrap();
+
+            match *state {
+                State::Ready => (),
+                State::Idle => *state = State::Ready,
+                State::Blocking => {
+                    *state = State::Idle;
+                    self.cond.notify_one();
+                }
+            }
+        }
+    }
+
+    impl std::task::Wake for Signal {
+        fn wake(self: Arc<Self>) {
+            self.wake_()
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.wake_()
+        }
+    }
+
+    pub fn wait_for<F: IntoFuture>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future.into_future());
+
+        let signal = Arc::new(Signal::new());
+
+        let waker = std::task::Waker::from(Arc::clone(&signal));
+        let mut context = std::task::Context::from_waker(&waker);
+
+        loop {
+            match future.as_mut().poll(&mut context) {
+                std::task::Poll::Pending => signal.wait(),
+                std::task::Poll::Ready(res) => return res,
+            }
+        }
     }
 }
