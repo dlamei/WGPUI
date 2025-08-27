@@ -1,5 +1,6 @@
 pub mod app;
 mod gpu;
+mod input_recorder;
 mod rect;
 mod ui;
 mod utils;
@@ -238,6 +239,7 @@ pub trait RenderPassHandle {
 
 pub struct RenderTarget<'a> {
     target_view: wgpu::TextureView,
+    resolve_view: Option<wgpu::TextureView>,
     encoder: std::mem::ManuallyDrop<wgpu::CommandEncoder>,
     wgpu: &'a WGPU,
 }
@@ -256,7 +258,7 @@ impl<'a> RenderTarget<'a> {
         let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.target_view,
-                resolve_target: None,
+                resolve_target: self.resolve_view.as_ref(),
                 depth_slice: None,
                 ops: wgpu::Operations {
                     load: rh.load_op(),

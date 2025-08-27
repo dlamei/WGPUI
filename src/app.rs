@@ -15,6 +15,7 @@ use winit::{
 use crate::{
     ClearScreen, ColorTint, DbgTriangle, ShaderHandle, Vertex, VertexPosCol,
     gpu::Renderer,
+    rect::Rect,
     ui,
     utils::{self, RGBA},
 };
@@ -47,13 +48,13 @@ impl AppSetup {
         let scale_factor = window.scale_factor() as f32;
 
         let wgpu = &renderer.wgpu;
-        let rect_render = ui::RectRender::new(wgpu);
 
         App {
             mouse_pos: Vec2::ZERO,
-            ui: ui::State::new(),
             renderer,
-            rect_render,
+            draw_list: ui::DrawList::new(),
+            dbg_wireframe: false,
+            // rect_render,
             window,
             last_size: UVec2::ONE,
             prev_frame_time: Instant::now(),
@@ -145,10 +146,9 @@ impl ApplicationHandler for AppSetup {
 }
 
 pub struct App {
-    ui: ui::State,
+    draw_list: ui::DrawList,
+    dbg_wireframe: bool,
     renderer: Renderer,
-
-    rect_render: ui::RectRender,
 
     prev_frame_time: Instant,
     delta_time: Duration,
@@ -195,16 +195,16 @@ impl App {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
             }
             WE::MouseInput { state, button, .. } => {
-                use winit::event::{MouseButton, ElementState};
+                use winit::event::{ElementState, MouseButton};
                 let state = match state {
                     ElementState::Pressed => true,
                     ElementState::Released => false,
                 };
 
                 match button {
-                    MouseButton::Left => self.ui.mouse.set_button_press(ui::MouseButton::Left, state),
-                    MouseButton::Right => self.ui.mouse.set_button_press(ui::MouseButton::Right, state),
-                    MouseButton::Middle => self.ui.mouse.set_button_press(ui::MouseButton::Middle, state),
+                    // MouseButton::Left => self.ui.mouse.set_button_press(ui::MouseButton::Left, state),
+                    // MouseButton::Right => self.ui.mouse.set_button_press(ui::MouseButton::Right, state),
+                    // MouseButton::Middle => self.ui.mouse.set_button_press(ui::MouseButton::Middle, state),
                     _ => (),
                 }
             }
@@ -225,48 +225,33 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        self.ui.mouse.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        self.draw_list.screen_size = self.window_size().as_vec2();
+        self.draw_list.begin_frame();
+
+        self.draw_list.add_rect(
+            Rect::from_min_max((100.0, 100.0).into(), (500.0, 500.0).into())
+                .draw()
+                .fill(RGBA::INDIGO)
+                .corner_radius(30.0),
+        );
 
 
-        self.ui.begin_frame();
+        self.draw_list.add_rect(
+            Rect::from_min_max((300.0, 300.0).into(), (600.0, 800.0).into())
+                .draw()
+                .outline(RGBA::PURPLE, 30.0)
+                .fill(RGBA::MAGENTA)
+                .corner_radius(80.0),
+        );
 
-        let id = self.ui.begin_fit("test");
+        self.draw_list
+            .path_arc_around(Vec2::new(500.0, 700.0), 200.0, 0.0, 3.141592653 / 2.0);
+        self.draw_list.path_to((200.0, 500.0).into());
+        self.draw_list.build_path_stroke(100.0, RGBA::FOLLY);
 
-        self.ui.button("test a ");
-
-
-        self.ui.end_widget();
-
-        self.ui.end_frame();
-
-        // self.ui.begin_node("window", |n| {
-        //     n.position((100.0, 100.0))
-        //         .fixed_size((self.mouse_pos.x, 300.0))
-        //         .child_gap(15.0)
-        //         .background_color(RGBA::RED)
-        // });
-
-        // self.ui.begin_node("a", |n| {
-        //     n.grow_x()
-        //         .fixed_size_y(30.0)
-        //         .background_color(RGBA::GREEN)
-        // });
-
-        // self.ui.begin_node("b", |n| {
-        //     n
-        //         .grow_x()
-        //         .background_color(RGBA::BLUE)
-        // });
-
-        // self.ui.end_node();
-        // self.ui.end_node();
-
-        // self.ui.end_node();
-        // println!("{:#?}", self.ui);
-
-        // let mut rects = self.ui.finish();
-        let rects = self.ui.get_render_rects();
-        self.rect_render.update_rect_instances(rects, &self.renderer.wgpu);
+        if self.dbg_wireframe {
+            self.draw_list.debug_wireframe(3.0);
+        }
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
@@ -274,6 +259,11 @@ impl App {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => {
                 event_loop.exit();
+            }
+            PhysicalKey::Code(KeyCode::KeyD) => {
+                if event.state.is_pressed() {
+                    self.dbg_wireframe = !self.dbg_wireframe;
+                }
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
                 let shader = ColorTint(RGBA::rand());
@@ -306,17 +296,11 @@ impl App {
         }
 
         {
-            let clear_screen = ClearScreen("#242933".into());
-            let dbg_tri = DbgTriangle::new((255, 50, 50).into(), &self.renderer.wgpu);
-            // let mut rect_rend = ui::RectRender::new(&self.renderer.wgpu);
-            self.rect_render
-                .update_window_size(self.width(), self.height());
-
             let mut surface = self.renderer.surface_target();
-            surface.render(&clear_screen);
-            // surface.render(&dbg_tri);
-            surface.render(&self.rect_render);
+            surface.render(&ClearScreen("#242933".into()));
+            surface.render(&self.draw_list);
         }
+
         self.renderer.present_frame();
         self.window.request_redraw();
     }

@@ -302,7 +302,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn surface_target(&mut self) -> RenderTarget<'_> {
+    pub fn resolve_target(&mut self) -> RenderTarget<'_> {
         let Some(surface_texture) = &mut self.active_surface else {
             log::error!("Renderer::prepare_frame must be called before calling this function");
             panic!();
@@ -331,9 +331,55 @@ impl Renderer {
             });
 
         RenderTarget {
-            target_view: surface_texture_view,
+            target_view: self.framebuffer_msaa.clone().unwrap(),
+            resolve_view: Some(surface_texture_view),
             encoder: std::mem::ManuallyDrop::new(encoder),
             wgpu: &self.wgpu,
+        }
+    }
+
+    pub fn surface_target(&mut self) -> RenderTarget<'_> {
+        let Some(surface_texture) = &mut self.active_surface else {
+            log::error!("Renderer::prepare_frame must be called before calling this function");
+            panic!();
+        };
+
+        let surface_texture_view =
+            surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: wgpu::Label::default(),
+                    aspect: wgpu::TextureAspect::default(),
+                    format: Some(self.wgpu.surface_format),
+                    dimension: None,
+                    base_mip_level: 0,
+                    mip_level_count: None,
+                    base_array_layer: 0,
+                    array_layer_count: None,
+                    usage: None,
+                });
+
+        let encoder = self
+            .wgpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("renderpass_encoder"),
+            });
+
+        if Self::use_multisample() {
+            RenderTarget {
+                target_view: self.framebuffer_msaa.clone().unwrap(),
+                resolve_view: Some(surface_texture_view),
+                encoder: std::mem::ManuallyDrop::new(encoder),
+                wgpu: &self.wgpu,
+            }
+        } else {
+            RenderTarget {
+                target_view: surface_texture_view,
+                resolve_view: None,
+                encoder: std::mem::ManuallyDrop::new(encoder),
+                wgpu: &self.wgpu,
+            }
         }
     }
 
@@ -363,7 +409,7 @@ impl Renderer {
     ) -> Self {
         let wgpu = WGPU::new_async(window, width, height).await;
 
-        let framebuffer_msaa = Self::create_framebuffer_msaa_texture(&wgpu, width, height);
+        let framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(&wgpu, width, height));
         let framebuffer_resolve = Self::create_framebuffer_resolve_texture(&wgpu, width, height);
         let depthbuffer = Self::create_depthbuffer(&wgpu, width, height);
 
@@ -378,7 +424,7 @@ impl Renderer {
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.wgpu.resize(width, height);
-        self.framebuffer_msaa = Self::create_framebuffer_msaa_texture(&self.wgpu, width, height);
+        self.framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(&self.wgpu, width, height));
         self.framebuffer_resolve =
             Self::create_framebuffer_resolve_texture(&self.wgpu, width, height);
         self.depthbuffer = Self::create_depthbuffer(&self.wgpu, width, height);
@@ -425,35 +471,31 @@ impl Renderer {
         wgpu::TextureFormat::Depth32Float
     }
 
-    pub const fn use_multisample() -> bool {
+    // pub const fn use_multisample() -> bool {
+    //     #[cfg(not(target_arch = "wasm32"))]
+    //     return true;
+    //     #[cfg(target_arch = "wasm32")]
+    //     return false;
+    // }
+
+    pub const fn multisample_count() -> u32 {
         #[cfg(not(target_arch = "wasm32"))]
-        return true;
+        return 4;
         #[cfg(target_arch = "wasm32")]
-        return false;
+        return 1;
     }
 
-    pub fn multisample_state() -> wgpu::MultisampleState {
-        if Self::use_multisample() {
-            wgpu::MultisampleState {
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-                count: 4,
-            }
-        } else {
-            Default::default()
-        }
+    pub fn use_multisample() -> bool {
+        Self::multisample_count() != 1
     }
 
     pub fn create_framebuffer_msaa_texture(
         wgpu: &WGPU,
         width: u32,
         height: u32,
-    ) -> Option<wgpu::TextureView> {
+    ) -> wgpu::TextureView {
         let width = width.max(1);
         let height = height.max(1);
-        if !Self::use_multisample() {
-            return None;
-        }
 
         let texture = wgpu.device.create_texture(
             &(wgpu::TextureDescriptor {
@@ -464,7 +506,7 @@ impl Renderer {
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count: 4,
+                sample_count: Self::multisample_count(),
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu.surface_format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -472,7 +514,7 @@ impl Renderer {
                 view_formats: &[],
             }),
         );
-        Some(texture.create_view(&wgpu::TextureViewDescriptor {
+        texture.create_view(&wgpu::TextureViewDescriptor {
             label: None,
             format: Some(wgpu.surface_format),
             dimension: Some(wgpu::TextureViewDimension::D2),
@@ -482,7 +524,7 @@ impl Renderer {
             array_layer_count: None,
             mip_level_count: None,
             usage: None,
-        }))
+        })
     }
 
     pub fn create_depthbuffer(wgpu: &WGPU, width: u32, height: u32) -> wgpu::TextureView {
@@ -497,7 +539,7 @@ impl Renderer {
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count: if Self::use_multisample() { 4 } else { 1 },
+                sample_count: Self::multisample_count(),
                 dimension: wgpu::TextureDimension::D2,
                 format: Self::depth_format(),
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -714,6 +756,7 @@ pub struct PipelineBuilder<'a> {
     pub primitive_topology: wgpu::PrimitiveTopology,
     pub cull_mode: Option<wgpu::Face>,
     pub depth_format: Option<wgpu::TextureFormat>,
+    pub sample_count: u32,
 }
 
 impl<'a> PipelineBuilder<'a> {
@@ -730,6 +773,7 @@ impl<'a> PipelineBuilder<'a> {
             primitive_topology: wgpu::PrimitiveTopology::TriangleList,
             cull_mode: None,
             depth_format: None,
+            sample_count: 1,
         }
     }
 
@@ -775,6 +819,11 @@ impl<'a> PipelineBuilder<'a> {
 
     pub fn depth(mut self, format: wgpu::TextureFormat) -> Self {
         self.depth_format = Some(format);
+        self
+    }
+
+    pub fn sample_count(mut self, count: u32) -> Self {
+        self.sample_count = count;
         self
     }
 
@@ -864,7 +913,7 @@ impl<'a> PipelineBuilder<'a> {
             },
             depth_stencil,
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: self.sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },

@@ -31,6 +31,37 @@ impl fmt::Display for RGBA {
     }
 }
 
+pub const fn hex_to_rgba(s: &str) -> RGBA {
+    const fn hex_val(b: u8) -> u8 {
+        match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => 0,
+        }
+    }
+
+    const fn byte(h: u8, l: u8) -> u8 {
+        (hex_val(h) << 4) | hex_val(l)
+    }
+
+    let bytes = s.as_bytes();
+    match bytes.len() {
+        7 => RGBA::rgb(
+            byte(bytes[1], bytes[2]),
+            byte(bytes[3], bytes[4]),
+            byte(bytes[5], bytes[6]),
+        ),
+        9 => RGBA::rgba(
+            byte(bytes[1], bytes[2]),
+            byte(bytes[3], bytes[4]),
+            byte(bytes[5], bytes[6]),
+            byte(bytes[7], bytes[8]),
+        ),
+        _ => RGBA::rgba(0, 0, 0, 255),
+    }
+}
+
 impl RGBA {
     pub fn rand() -> Self {
         Self {
@@ -100,31 +131,47 @@ impl RGBA {
         Self::rgba_f(r, g, b, a)
     }
 
-    pub fn hex(hex: &str) -> Self {
-        let hex = hex.trim_start_matches('#');
-        let vals: Vec<u8> = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-            .collect();
+    pub const fn hex(hex: &str) -> Self {
+        const fn hex_val(b: u8) -> u8 {
+            match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                b'A'..=b'F' => b - b'A' + 10,
+                _ => 0,
+            }
+        }
 
-        let (r8, g8, b8, a8) = match vals.as_slice() {
-            [r, g, b] => (*r, *g, *b, 255),
-            [r, g, b, a] => (*r, *g, *b, *a),
-            _ => panic!("Hex code must be 6 or 8 characters long"),
-        };
+        const fn byte(h: u8, l: u8) -> u8 {
+            (hex_val(h) << 4) | hex_val(l)
+        }
 
-        Self::rgba_f(
-            Self::srgb_to_linear_u8(r8),
-            Self::srgb_to_linear_u8(g8),
-            Self::srgb_to_linear_u8(b8),
-            a8 as f32 / 255.0,
-        )
-        .map_linear_to_srgb()
+        let bytes = hex.as_bytes();
+        match bytes.len() {
+            7 => RGBA::rgb(
+                byte(bytes[1], bytes[2]),
+                byte(bytes[3], bytes[4]),
+                byte(bytes[5], bytes[6]),
+            ),
+            9 => RGBA::rgba(
+                byte(bytes[1], bytes[2]),
+                byte(bytes[3], bytes[4]),
+                byte(bytes[5], bytes[6]),
+                byte(bytes[7], bytes[8]),
+            ),
+            _ => RGBA::rgba(0, 0, 0, 255),
+        }
     }
 
     pub const RED: RGBA = RGBA::rgb(255, 0, 0);
     pub const GREEN: RGBA = RGBA::rgb(0, 255, 0);
     pub const BLUE: RGBA = RGBA::rgb(0, 0, 255);
+
+    pub const PURPLE: RGBA = RGBA::hex("#740580");
+    pub const MAGENTA: RGBA = RGBA::hex("#B10065");
+    pub const FOLLY: RGBA = RGBA::hex("#FF1D68");
+    pub const ORANGE: RGBA = RGBA::hex("#F76218");
+    pub const SAFFRON: RGBA = RGBA::hex("#F2C447");
+    pub const INDIGO: RGBA = RGBA::hex("#214675");
 
     pub const WHITE: RGBA = RGBA::rgb(255, 255, 255);
     pub const BLACK: RGBA = RGBA::rgb(0, 0, 0);
