@@ -1,6 +1,6 @@
 pub mod app;
 mod gpu;
-mod input_recorder;
+mod mouse;
 mod rect;
 mod ui;
 mod utils;

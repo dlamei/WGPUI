@@ -14,9 +14,10 @@ use winit::{
 
 use crate::{
     ClearScreen, ColorTint, DbgTriangle, ShaderHandle, Vertex, VertexPosCol,
-    gpu::Renderer,
+    gpu::{Renderer, WGPU},
+    mouse::MouseBtn,
     rect::Rect,
-    ui,
+    ui::{self, WidgetOpt},
     utils::{self, RGBA},
 };
 
@@ -45,21 +46,8 @@ impl AppSetup {
     }
 
     pub fn init_app(window: Arc<Window>, renderer: Renderer) -> App {
-        let scale_factor = window.scale_factor() as f32;
-
-        let wgpu = &renderer.wgpu;
-
-        App {
-            mouse_pos: Vec2::ZERO,
-            renderer,
-            draw_list: ui::DrawList::new(),
-            dbg_wireframe: false,
-            // rect_render,
-            window,
-            last_size: UVec2::ONE,
-            prev_frame_time: Instant::now(),
-            delta_time: Duration::ZERO,
-        }
+        // let scale_factor = window.scale_factor() as f32;
+        App::new(renderer, window)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -147,6 +135,8 @@ impl ApplicationHandler for AppSetup {
 
 pub struct App {
     draw_list: ui::DrawList,
+    ui_state: ui::State,
+
     dbg_wireframe: bool,
     renderer: Renderer,
 
@@ -160,6 +150,21 @@ pub struct App {
 }
 
 impl App {
+    pub fn new(renderer: Renderer, window: impl Into<Arc<Window>>) -> Self {
+        let window: Arc<_> = window.into();
+        Self {
+            ui_state: ui::State::new(window.clone()),
+            draw_list: ui::DrawList::new(),
+            dbg_wireframe: false,
+            renderer,
+            prev_frame_time: Instant::now(),
+            delta_time: Duration::ZERO,
+            mouse_pos: Vec2::NAN,
+            last_size: UVec2::ONE,
+            window: window.clone(),
+        }
+    }
+
     pub fn window_size(&self) -> UVec2 {
         let size = self.window.inner_size();
         (size.width, size.height).into()
@@ -202,9 +207,9 @@ impl App {
                 };
 
                 match button {
-                    // MouseButton::Left => self.ui.mouse.set_button_press(ui::MouseButton::Left, state),
-                    // MouseButton::Right => self.ui.mouse.set_button_press(ui::MouseButton::Right, state),
-                    // MouseButton::Middle => self.ui.mouse.set_button_press(ui::MouseButton::Middle, state),
+                    MouseButton::Left => self.ui_state.set_mouse_press(MouseBtn::Left, state),
+                    MouseButton::Right => self.ui_state.set_mouse_press(MouseBtn::Right, state),
+                    MouseButton::Middle => self.ui_state.set_mouse_press(MouseBtn::Middle, state),
                     _ => (),
                 }
             }
@@ -225,33 +230,65 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        self.draw_list.screen_size = self.window_size().as_vec2();
-        self.draw_list.begin_frame();
+        self.ui_state
+            .set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        self.ui_state.begin_frame();
 
-        self.draw_list.add_rect(
-            Rect::from_min_max((100.0, 100.0).into(), (500.0, 500.0).into())
-                .draw()
+        self.ui_state.add_frame(
+            "c",
+            Vec2::new(50.0, 200.0),
+            Vec2::new(400.0, 300.0),
+            ui::FrameStyle {
+                fill: ui::StateStyle {
+                    default: RGBA::hex("#242933"),
+                    active: RGBA::hex("#242933"),
+                    hovered: RGBA::hex("#242933"),
+                },
+                outline: ui::StateStyle {
+                    default: RGBA::hex("#242933"),
+                    hovered: RGBA::hex("#832161"),
+                    active: RGBA::hex("#DA4167"),
+                },
+            },
+        );
+        self.ui_state.end_widget();
+
+
+        let signal = self.ui_state.add_widget(
+            "a",
+            WidgetOpt::new()
                 .fill(RGBA::INDIGO)
-                .corner_radius(30.0),
+                .draggable()
+                .spacing(40.0)
+                .margin(100.0)
+                .resizable()
+                .corner_radius(10.0)
+                .outline(RGBA::MAGENTA, 5.0)
+                .pos_fix(100.0, 100.0)
+                .size_fix(500.0, 300.0),
         );
 
 
-        self.draw_list.add_rect(
-            Rect::from_min_max((300.0, 300.0).into(), (600.0, 800.0).into())
-                .draw()
-                .outline(RGBA::PURPLE, 30.0)
-                .fill(RGBA::MAGENTA)
-                .corner_radius(80.0),
-        );
-
-        self.draw_list
-            .path_arc_around(Vec2::new(500.0, 700.0), 200.0, 0.0, 3.141592653 / 2.0);
-        self.draw_list.path_to((200.0, 500.0).into());
-        self.draw_list.build_path_stroke(100.0, RGBA::FOLLY);
-
-        if self.dbg_wireframe {
-            self.draw_list.debug_wireframe(3.0);
+        if self.ui_state.add_button("hello") {
+            println!("hello");
         }
+        if self.ui_state.add_button("tes") {
+            println!("tes");
+        }
+
+        // self.ui_state.add_widget(
+        //     "b",
+        //     WidgetOpt::new()
+        //         .fill(RGBA::BLUE)
+        //         .clickable()
+        //         .size_fix(50.0, 800.0),
+        // );
+
+        // self.ui_state.end_widget();
+        self.ui_state.end_widget();
+
+        self.ui_state.draw_dbg_wireframe = self.dbg_wireframe;
+        self.ui_state.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
@@ -297,8 +334,9 @@ impl App {
 
         {
             let mut surface = self.renderer.surface_target();
-            surface.render(&ClearScreen("#242933".into()));
-            surface.render(&self.draw_list);
+            // surface.render(&ClearScreen("#242933".into()));
+            surface.render(&ClearScreen(0.into()));
+            surface.render(&self.ui_state);
         }
 
         self.renderer.present_frame();

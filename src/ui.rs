@@ -2,18 +2,21 @@ use glam::{Mat4, UVec2, UVec4, Vec2, Vec4};
 use macros::vertex;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
+use winit::window::Window;
 
 use std::{
     collections::VecDeque,
     fmt,
     hash::{Hash, Hasher},
     ops,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
     RGBA, RenderPassHandle, ShaderGenerics, ShaderHandle, VertexPosCol,
     gpu::{self, Vertex as VertexTyp, VertexDesc, WGPU},
+    mouse::{CursorIcon, MouseBtn, MouseRec},
     rect::Rect,
 };
 
@@ -150,6 +153,41 @@ pub struct DrawRect {
     pub corner_radius: f32,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawOpt {
+    pub fill: RGBA,
+    pub border_col: RGBA,
+    pub border_width: f32,
+    pub corner_radius: f32,
+}
+
+impl DrawOpt {
+    pub fn new() -> Self {
+        Self {
+            fill: RGBA::ZERO,
+            border_col: RGBA::ZERO,
+            border_width: 0.0,
+            corner_radius: 0.0,
+        }
+    }
+
+    pub fn fill(mut self, fill: RGBA) -> Self {
+        self.fill = fill;
+        return self;
+    }
+
+    pub fn border(mut self, col: RGBA, width: f32) -> Self {
+        self.border_col = col;
+        self.border_width = width;
+        self
+    }
+
+    pub fn corner_radius(mut self, rad: f32) -> Self {
+        self.corner_radius = rad;
+        self
+    }
+}
+
 impl Rect {
     pub fn draw(self) -> DrawRect {
         DrawRect::new(self)
@@ -209,13 +247,35 @@ impl DrawList {
             screen_size: Vec2::ONE,
             path: Vec::new(),
             path_closed: false,
-            resolution: 16.0,
+            resolution: 8.0,
         }
     }
 
     pub fn begin_frame(&mut self) {
         self.vtx_buffer.clear();
         self.idx_buffer.clear();
+        self.path_clear();
+    }
+
+    pub fn draw_widget(&mut self, rect: Rect, opt: WidgetOpt) {
+        self.path_rect(rect.min, rect.max, opt.corner_radius);
+
+        if opt.flags.contains(WidgetFlags::DRAW_FILL) {
+            let (vtx, idx) = tessellate_fill(&self.path, opt.fill);
+            let off = self.vtx_buffer.len() as u32;
+            self.vtx_buffer.extend(vtx);
+            self.idx_buffer.extend(idx.into_iter().map(|i| i + off));
+        }
+
+        if opt.flags.contains(WidgetFlags::DRAW_OUTLINE) {
+            self.path_clear();
+            self.path_rect(rect.min, rect.max, opt.corner_radius);
+            let (vtx, idx) = tessellate_line(&self.path, opt.outline_col, opt.outline_width, true);
+            let off = self.vtx_buffer.len() as u32;
+            self.vtx_buffer.extend(vtx);
+            self.idx_buffer.extend(idx.into_iter().map(|i| i + off));
+        }
+
         self.path_clear();
     }
 
@@ -230,6 +290,8 @@ impl DrawList {
         }
 
         if let Some((col, width)) = dr.outline {
+            self.path_clear();
+            self.path_rect(dr.rect.min, dr.rect.max, dr.corner_radius);
             let (vtx, idx) = tessellate_line(&self.path, col, width, true);
             let off = self.vtx_buffer.len() as u32;
             self.vtx_buffer.extend(vtx);
@@ -245,19 +307,28 @@ impl DrawList {
         radius: f32,
         start_angle: f32,
         sweep_angle: f32,
-        // segments: usize,
     ) {
-        if radius <= 0.0 || sweep_angle == 0.0 {
+        if radius == 0.0 || sweep_angle == 0.0 {
             return;
         }
 
-        let arc_len = radius * sweep_angle.abs();
-        let segments = (arc_len / self.resolution).ceil() as usize;
-        if segments == 0 {
-            return;
+        // maximum angular step so chord length ≤ resolution
+        let chord_step = 2.0 * (self.resolution / (2.0 * radius))
+            .clamp(-1.0, 1.0)
+            .asin();
+
+        // also cap angular step to avoid low-segment arcs at small radius
+        let max_angle_step = 0.25; // ≈ 14° in radians
+        let step_angle = chord_step.min(max_angle_step);
+
+        // segment count from sweep / step, with a minimum
+        let mut segments = (sweep_angle.abs() / step_angle).ceil() as usize;
+        if segments < 4 {
+            segments = 4;
         }
 
         let step = sweep_angle / segments as f32;
+
         for i in 0..=segments {
             let theta = start_angle + step * (i as f32);
             let p = Vec2::new(
@@ -266,6 +337,62 @@ impl DrawList {
             );
             self.path.push(p);
         }
+    }
+
+    pub fn path_rect_offset(&mut self, min: Vec2, max: Vec2, rad: f32, off: f32) {
+        const PI: f32 = std::f32::consts::PI;
+        let rounded = rad != 0.0;
+        // let segs = 8;
+
+        self.path_to(Vec2::new(min.x + rad + off, min.y + off));
+        self.path_to(Vec2::new(max.x - rad - off, min.y + off));
+        if rounded {
+            self.path_arc_around(
+                Vec2::new(max.x - rad - off, min.y + rad + off),
+                rad,
+                PI / 2.0,
+                -PI / 2.0,
+                // segs,
+            );
+        }
+
+        self.path_to(Vec2::new(max.x - off, min.y + rad + off));
+        self.path_to(Vec2::new(max.x - off, max.y - rad - off));
+        if rounded {
+            self.path_arc_around(
+                Vec2::new(max.x - rad - off, max.y - rad - off),
+                rad,
+                0.0,
+                -PI / 2.0,
+                // segs,
+            );
+        }
+
+        self.path_to(Vec2::new(max.x - rad - off, max.y - off));
+        self.path_to(Vec2::new(min.x + rad + off, max.y - off));
+        if rounded {
+            self.path_arc_around(
+                Vec2::new(min.x + rad + off, max.y - rad - off),
+                rad,
+                -PI / 2.0,
+                -PI / 2.0,
+                // segs,
+            );
+        }
+
+        self.path_to(Vec2::new(min.x + off, max.y - rad - off));
+        self.path_to(Vec2::new(min.x + off, min.y + rad + off));
+        if rounded {
+            self.path_arc_around(
+                Vec2::new(min.x + rad + off, min.y + rad + off),
+                rad,
+                PI,
+                -PI / 2.0,
+                // segs,
+            );
+        }
+
+        self.path_close();
     }
 
     pub fn path_rect(&mut self, min: Vec2, max: Vec2, rad: f32) {
@@ -493,5 +620,1113 @@ impl ShaderHandle for UiShader {
             .bind_groups(&[&global_bind_group_layout])
             .sample_count(gpu::Renderer::multisample_count())
             .build(&wgpu.device)
+    }
+}
+
+macro_rules! sig_bits {
+    ($n:literal) => { 1 << $n };
+    ($i:ident) => { Signals::$i.bits() };
+    ($($x:tt)|+) => {
+        $(sig_bits!($x) | )* 0
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Signals: u32 {
+        const NONE = 0;
+
+        const PRESSED_LEFT = 1 << 0;
+        const PRESSED_MIDDLE = 1 << 1;
+        const PRESSED_RIGHT = 1 << 2;
+
+        const DRAGGING_LEFT = 1 << 3;
+        const DRAGGING_MIDDLE = 1 << 4;
+        const DRAGGING_RIGHT = 1 << 5;
+
+        const DOUBLE_DRAGGING_LEFT = 1 << 6;
+        const DOUBLE_DRAGGING_MIDDLE = 1 << 7;
+        const DOUBLE_DRAGGING_RIGHT = 1 << 8;
+
+        const RELEASED_LEFT     = 1 << 9;
+        const RELEASED_MIDDLE   = 1 << 10;
+        const RELEASED_RIGHT    = 1 << 11;
+
+        const CLICKED_LEFT      = 1 << 12;
+        const CLICKED_MIDDLE    = 1 << 13;
+        const CLICKED_RIGHT     = 1 << 14;
+
+        const DOUBLE_CLICKED_LEFT   = 1 << 15;
+        const DOUBLE_CLICKED_MIDDLE = 1 << 16;
+        const DOUBLE_CLICKED_RIGHT  = 1 << 17;
+
+        const HOVERING = 1 << 18 | sig_bits!(MOUSE_OVER);
+        const MOUSE_OVER = 1 << 19; // may be occluded
+
+        const PRESSED_KEYBOARD = 1 << 20;
+    }
+}
+
+macro_rules! sig_fn {
+    ($fn_name:ident => $($x:ident),*) => {
+        impl Signals {
+            pub const fn $fn_name(&self) -> bool {
+                // let flag = Signals::from_bits($x).unwrap();
+                $(self.contains(Signals::$x) || )* false
+            }
+        }
+    }
+}
+
+sig_fn!(hovering => HOVERING);
+sig_fn!(mouse_over => MOUSE_OVER);
+sig_fn!(pressed => PRESSED_LEFT , PRESSED_KEYBOARD);
+sig_fn!(clicked => CLICKED_LEFT , PRESSED_KEYBOARD);
+sig_fn!(double_clicked => DOUBLE_CLICKED_LEFT);
+sig_fn!(dragging => DRAGGING_LEFT);
+sig_fn!(released => RELEASED_LEFT);
+
+impl fmt::Display for Signals {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if *self == Self::NONE {
+            return write!(f, "NONE");
+        }
+
+
+        let names = self
+            .iter_names()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+        write!(f, "{}", names.join("|"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Axis {
+    X = 0,
+    Y = 1,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PerAxis<T>(pub [T; 2]);
+
+impl From<PerAxis<f32>> for Vec2 {
+    fn from(value: PerAxis<f32>) -> Self {
+        Vec2::new(value.0[0], value.0[1])
+    }
+}
+
+impl<T> ops::Index<Axis> for PerAxis<T> {
+    type Output = T;
+
+    fn index(&self, index: Axis) -> &Self::Output {
+        &self.0[index as usize]
+    }
+}
+
+impl<T> ops::IndexMut<Axis> for PerAxis<T> {
+    fn index_mut(&mut self, index: Axis) -> &mut Self::Output {
+        &mut self.0[index as usize]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WidgetId(u64);
+
+impl WidgetId {
+    pub const NULL: WidgetId = WidgetId(0);
+
+    pub fn from_str(s: &str) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        s.hash(&mut hasher);
+        Self(hasher.finish().max(1))
+    }
+
+    pub fn is_null(&self) -> bool {
+        *self == Self::NULL
+    }
+}
+
+impl fmt::Display for WidgetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut n = self.0;
+        if n == 0 {
+            return write!(f, "ID(0)");
+        }
+        let mut buf = Vec::new();
+        while n > 0 {
+            let rem = (n % 36) as u8;
+            let ch = if rem < 10 {
+                b'0' + rem
+            } else {
+                b'A' + (rem - 10)
+            };
+            buf.push(ch);
+            n /= 36;
+        }
+        buf.reverse();
+        let s = std::str::from_utf8(&buf).unwrap();
+        write!(f, "ID({})", s)
+    }
+}
+
+impl fmt::Debug for WidgetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct WidgetOpt {
+    pub fill: RGBA,
+    pub outline_col: RGBA,
+    pub outline_width: f32,
+    pub corner_radius: f32,
+    pub size: PerAxis<f32>,
+    pub min_size: PerAxis<Option<f32>>,
+    pub pos: Option<Vec2>,
+    pub flags: WidgetFlags,
+    pub layout: Layout,
+    pub padding: Padding,
+    pub margin: Padding,
+    pub spacing: f32,
+}
+
+impl WidgetOpt {
+    pub fn new() -> Self {
+        Self {
+            fill: RGBA::ZERO,
+            outline_col: RGBA::ZERO,
+            outline_width: 0.0,
+            corner_radius: 0.0,
+            size: PerAxis([0.0; 2]),
+            min_size: PerAxis([None; 2]),
+            pos: None,
+            flags: WidgetFlags::NONE,
+            layout: Default::default(),
+            padding: Padding::ZERO,
+            margin: Padding::ZERO,
+            spacing: 0.0,
+        }
+    }
+
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    pub fn margin(mut self, m: f32) -> Self {
+        self.margin = Padding::all(m);
+        self
+    }
+
+    pub fn fill(mut self, fill: RGBA) -> Self {
+        self.fill = fill;
+        self.flags |= WidgetFlags::DRAW_FILL;
+        self
+    }
+
+    pub fn outline(mut self, col: RGBA, width: f32) -> Self {
+        self.outline_col = col;
+        self.outline_width = width;
+        self.flags |= WidgetFlags::DRAW_OUTLINE;
+        self
+    }
+
+    pub fn size_fix(mut self, x: f32, y: f32) -> Self {
+        self.size = PerAxis([x, y]);
+        self
+    }
+
+    pub fn min_size_x(mut self, min_x: f32) -> Self {
+        self.min_size[Axis::X] = Some(min_x);
+        self
+    }
+
+    pub fn min_size_y(mut self, min_y: f32) -> Self {
+        self.min_size[Axis::Y] = Some(min_y);
+        self
+    }
+
+    pub fn min_size(self, x: f32, y: f32) -> Self {
+        self.min_size_x(x).min_size_y(y)
+    }
+
+    pub fn pos_fix(mut self, x: f32, y: f32) -> Self {
+        self.pos = Some(Vec2::new(x, y));
+        self
+    }
+
+    pub fn hoverable(mut self) -> Self {
+        self.flags |= WidgetFlags::HOVERABLE;
+        self
+    }
+
+    pub fn clickable(mut self) -> Self {
+        self.flags |= WidgetFlags::CLICKABLE;
+        self
+    }
+
+    pub fn draggable(mut self) -> Self {
+        self.flags |= WidgetFlags::DRAGGABLE;
+        self
+    }
+
+    pub fn resizable(mut self) -> Self {
+        self.flags |= WidgetFlags::RESIZABLE;
+        self
+    }
+
+    pub fn corner_radius(mut self, rad: f32) -> Self {
+        self.corner_radius = rad;
+        self
+    }
+}
+
+macro_rules! widget_bits {
+    ($n:literal) => { 1 << $n };
+    ($i:ident) => { WidgetFlags::$i.bits() };
+    ($($x:tt)|+) => {
+        $(widget_bits!($x) | )* 0
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct WidgetFlags: u32 {
+        const NONE          = 0;
+
+        const DRAW_OUTLINE  = 1 << 0;
+        const DRAW_FILL     = 1 << 1;
+
+        const HOVERABLE     = 1 << 2;
+        const CLICKABLE     = 1 << 3 | widget_bits!(HOVERABLE);
+        const DRAGGABLE     = 1 << 4 | widget_bits!(CLICKABLE);
+        const RESIZABLE     = 1 << 5;
+    }
+}
+
+macro_rules! widget_flags_fn {
+    ($fn_name:ident => $($x:tt)*) => {
+        impl WidgetFlags {
+            pub const fn $fn_name(&self) -> bool {
+                let flag = WidgetFlags::from_bits(widget_bits!($($x)*)).unwrap();
+                self.contains(flag)
+            }
+        }
+    }
+}
+
+widget_flags_fn!(hoverable => HOVERABLE);
+widget_flags_fn!(clickable => CLICKABLE);
+widget_flags_fn!(draggable => DRAGGABLE);
+widget_flags_fn!(resizable => RESIZABLE);
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Layout {
+    #[default]
+    Vertical, 
+    Horizontal
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Padding {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl Padding {
+    const ZERO: Padding = Padding::new(0.0, 0.0, 0.0, 0.0);
+
+    pub const fn new(left: f32, right: f32, top: f32, bottom: f32) -> Self {
+        Self {
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+
+    pub const fn all(v: f32) -> Self {
+        Self::new(v, v, v, v)
+    }
+
+    pub fn axis_sum(&self) -> Vec2 {
+        (self.left + self.right, self.top + self.bottom).into()
+    }
+
+    pub fn sum_along_axis(&self, a: Axis) -> f32 {
+        match a {
+            Axis::X => self.left + self.right,
+            Axis::Y => self.top + self.bottom,
+        }
+    }
+
+    pub fn axis_padding(&self, a: Axis) -> [f32; 2] {
+        match a {
+            Axis::X => [self.left, self.right],
+            Axis::Y => [self.top, self.bottom],
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Widget {
+    pub id: WidgetId,
+    pub parent: WidgetId,
+    pub first_child: WidgetId,
+    pub last_child: WidgetId,
+    pub next_sibling: WidgetId,
+    pub prev_sibling: WidgetId,
+
+    pub opt: WidgetOpt,
+
+    pub rect: Rect,
+    pub rel_pos: Vec2,
+    // pub pre_drag_rect: Option<Rect>,
+    pub last_frame_used: u64,
+}
+
+impl Widget {
+    pub fn new(id: WidgetId, opt: WidgetOpt) -> Self {
+        Self {
+            id,
+            parent: WidgetId::NULL,
+            first_child: WidgetId::NULL,
+            last_child: WidgetId::NULL,
+            next_sibling: WidgetId::NULL,
+            prev_sibling: WidgetId::NULL,
+            rect: Rect::ZERO,
+            rel_pos: Vec2::ZERO,
+            // pre_drag_rect: None,
+            last_frame_used: 0,
+            opt,
+        }
+    }
+
+    pub fn point_over(&self, point: Vec2, threashold: f32) -> bool {
+        let off = Vec2::splat(self.opt.outline_width) / 2.0 + Vec2::splat(threashold);
+        let min = self.rect.min - off;
+        let max = self.rect.max + off;
+        Rect::from_min_max(min, max).contains(point)
+    }
+
+    pub fn min_size(&self) -> Vec2 {
+        let min = self.opt.outline_width.max(self.opt.corner_radius * 2.0);
+        let min_w = self.opt.min_size[Axis::X].unwrap_or(min);
+        let min_h = self.opt.min_size[Axis::Y].unwrap_or(min);
+        Vec2::new(min_w, min_h)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StateStyle {
+    pub default: RGBA,
+    pub active: RGBA,
+    pub hovered: RGBA,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameStyle {
+    pub fill: StateStyle,
+    pub outline: StateStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ResizeDir {
+    N,
+    NE,
+    E,
+    SE,
+    S,
+    SW,
+    W,
+    NW,
+}
+
+impl ResizeDir {
+    fn as_cursor(self) -> CursorIcon {
+        match self {
+            ResizeDir::N => CursorIcon::ResizeN,
+            ResizeDir::NE => CursorIcon::ResizeNE,
+            ResizeDir::E => CursorIcon::ResizeE,
+            ResizeDir::SE => CursorIcon::ResizeSE,
+            ResizeDir::S => CursorIcon::ResizeS,
+            ResizeDir::SW => CursorIcon::ResizeSW,
+            ResizeDir::W => CursorIcon::ResizeW,
+            ResizeDir::NW => CursorIcon::ResizeNW,
+        }
+    }
+
+    fn has_n(&self) -> bool {
+        matches!(self, Self::N | Self::NE | Self::NW)
+    }
+    fn has_e(&self) -> bool {
+        matches!(self, Self::E | Self::NE | Self::SE)
+    }
+    fn has_s(&self) -> bool {
+        matches!(self, Self::S | Self::SE | Self::SW)
+    }
+    fn has_w(&self) -> bool {
+        matches!(self, Self::W | Self::NW | Self::SW)
+    }
+}
+
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// pub struct Style {
+//     frame_fill: RGBA,
+//     frame_fill_active: RGBA,
+//     frame_fill_hovered: RGBA,
+
+//     frame_outline: RGBA,
+//     frame_outline_active: RGBA,
+//     frame_outline_hovered: RGBA,
+//     frame_outline_width: f32,
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WidgetAction {
+    Resize(ResizeDir),
+    Move,
+}
+
+pub struct State {
+    pub mouse: MouseRec,
+    pub frame_count: u64,
+
+    pub widgets: rustc_hash::FxHashMap<WidgetId, Widget>,
+    pub widget_stack: Vec<WidgetId>,
+    pub id_stack: Vec<WidgetId>,
+    pub draw_order: Vec<WidgetId>,
+    pub roots: Vec<WidgetId>,
+
+    pub hot_id: WidgetId,
+    pub active_id: WidgetId,
+
+    pub cursor: Vec2,
+    pub draw: DrawList,
+
+    pub resize_threshold: f32,
+    pub pre_action_widget_rect: Option<Rect>,
+    pub curr_widget_action: Option<WidgetAction>,
+
+    pub cursor_icon: CursorIcon,
+
+    // pub style: Style,
+    pub draw_dbg_wireframe: bool,
+    pub window: Arc<Window>,
+}
+
+impl RenderPassHandle for State {
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
+        self.draw.draw(rpass, wgpu);
+    }
+}
+
+impl State {
+    pub fn set_mouse_press(&mut self, button: MouseBtn, press: bool) {
+        self.mouse.set_button_press(button, press)
+    }
+
+    pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
+        self.mouse.set_mouse_pos(x, y)
+    }
+
+    pub fn set_screen_size(&mut self, w: f32, h: f32) {
+        self.draw.screen_size = (w, h).into();
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.draw.begin_frame();
+        self.id_stack.clear();
+        self.roots.clear();
+        self.widget_stack.clear();
+        self.cursor = Vec2::ZERO;
+
+        let size = self.window.inner_size();
+        self.draw.screen_size = (size.width as f32, size.height as f32).into();
+
+        if let Some(WidgetAction::Resize(dir)) = self.curr_widget_action {
+            self.set_cursor_icon(dir.as_cursor())
+        } else {
+            self.set_cursor_icon(CursorIcon::Default)
+        }
+    }
+
+    pub fn set_cursor_icon(&mut self, icon: CursorIcon) {
+        if self.cursor_icon != icon {
+            self.cursor_icon = icon;
+            self.window.set_cursor(icon)
+        }
+    }
+
+    pub fn push_id(&mut self, id: WidgetId) {
+        self.id_stack.push(id);
+    }
+
+    pub fn pop_id(&mut self) {
+        self.id_stack.pop();
+    }
+
+    pub fn id_from_str(&self, str: &str) -> WidgetId {
+        use std::hash::{Hash, Hasher};
+        if let Some(p_id) = self.id_stack.last() {
+            let mut hasher = rustc_hash::FxHasher::with_seed(p_id.0 as usize);
+            str.hash(&mut hasher);
+            WidgetId(hasher.finish())
+        } else {
+            WidgetId::from_str(str)
+        }
+    }
+
+    pub fn get_root(&self, id: WidgetId) -> WidgetId {
+        if id.is_null() {
+            return id
+        }
+        let w = self.widgets.get(&id).unwrap();
+        let mut p_id = w.parent;
+
+        while !p_id.is_null() {
+            let w = self.widgets.get(&p_id).unwrap();
+            p_id = w.parent;
+        }
+
+        w.id
+    }
+
+    pub fn collect_children(&self, id: WidgetId) -> Vec<WidgetId> {
+        let mut collect = vec![];
+
+        let mut ids = vec![id];
+        while let Some(id) = ids.pop() {
+            collect.push(id);
+            let w = self.widgets.get(&id).unwrap();
+
+            let mut c_id = w.first_child;
+            while !c_id.is_null() {
+                ids.push(c_id);
+                let c = self.widgets.get(&c_id).unwrap();
+                c_id = c.next_sibling;
+            }
+        }
+
+        collect
+    }
+
+    pub fn end_frame(&mut self) {
+        if !self.id_stack.is_empty() {
+            log::warn!("end_frame: id_stack is not empty at frame end");
+        }
+
+        self.mouse.clear_released();
+
+        self.update_hot();
+        self.update_active();
+
+        let keep_widget = |w: &Widget| w.last_frame_used == self.frame_count;
+        let active_root = self.get_root(self.active_id);
+
+        self.draw_order.clear();
+
+        for &r in &self.roots {
+            if r == active_root {
+                continue
+            }
+
+            self.draw_order.extend(self.collect_children(r));
+        }
+
+        if !active_root.is_null() {
+            let collect = self.collect_children(active_root);
+            self.draw_order.extend(collect);
+        }
+
+        self.draw_order.retain(|id| {
+            self.widgets
+                .get(id)
+                .map_or(false, |w| w.last_frame_used == self.frame_count)
+        });
+
+
+        // if !self.active_id.is_null() {
+        //     self.draw_order.push(self.active_id);
+        // }
+
+        self.widgets.retain(|_, w| keep_widget(w));
+        self.build_draw_data();
+        self.frame_count += 1;
+    }
+
+    pub fn new(window: impl Into<Arc<Window>>) -> Self {
+        Self {
+            draw: DrawList::new(),
+            cursor_icon: CursorIcon::Default,
+            cursor: Vec2::ZERO,
+            roots: Vec::new(),
+            pre_action_widget_rect: None,
+            curr_widget_action: None,
+            hot_id: WidgetId::NULL,
+            active_id: WidgetId::NULL,
+            mouse: MouseRec::new(),
+            frame_count: 0,
+            widgets: rustc_hash::FxHashMap::default(),
+            id_stack: Vec::new(),
+            widget_stack: Vec::new(),
+            draw_order: Vec::new(),
+            draw_dbg_wireframe: false,
+            resize_threshold: 10.0,
+            window: window.into(),
+        }
+    }
+
+    pub fn set_cursor(&mut self, pos: Vec2) {
+        self.cursor = pos;
+    }
+
+    pub fn is_id_over(&self, id1: WidgetId, id2: WidgetId) -> bool {
+        if id2.is_null() {
+            return true;
+        }
+        for &id in self.draw_order.iter().rev() {
+            if id == id1 {
+                return true;
+            }
+
+            if id == id2 {
+                return false;
+            }
+        }
+
+        false
+    }
+
+    pub fn update_hot(&mut self) {
+        let id = self.hot_id;
+        if id.is_null() {
+            return;
+        }
+
+        let w = self.widgets.get(&id).unwrap();
+        let w_rect = w.rect;
+
+        if !w.point_over(self.mouse.pos, self.resize_threshold) {
+            self.hot_id = WidgetId::NULL;
+            return;
+        }
+
+        let mut can_resize = None;
+        if w.opt.flags.resizable() && self.curr_widget_action.is_none() {
+            let r = &w_rect;
+            let m = self.mouse.pos;
+
+            let thr = self.resize_threshold + w.opt.outline_width / 2.0;
+
+            let in_corner_region =
+                |corner: Vec2| -> bool { corner.distance_squared(m) <= thr.powi(2) };
+
+            // let mut cursor_icon = CursorIcon::Default;
+
+            if in_corner_region(r.right_top()) {
+                // cursor_icon = CursorIcon::ResizeNE;
+                can_resize = Some(ResizeDir::NE)
+            } else if in_corner_region(r.right_bottom()) {
+                can_resize = Some(ResizeDir::SE)
+            } else if in_corner_region(r.left_bottom()) {
+                can_resize = Some(ResizeDir::SW)
+            } else if in_corner_region(r.left_top()) {
+                can_resize = Some(ResizeDir::NW)
+            } else {
+                let top_y = r.left_top().y;
+                let bottom_y = r.left_bottom().y;
+                let left_x = r.left_top().x;
+                let right_x = r.right_top().x;
+
+                if (m.y - top_y).abs() <= thr && m.x >= left_x + thr && m.x <= right_x - thr {
+                    can_resize = Some(ResizeDir::N)
+                } else if (m.y - bottom_y).abs() <= thr
+                    && m.x >= left_x + thr
+                    && m.x <= right_x - thr
+                {
+                    can_resize = Some(ResizeDir::S)
+                } else if (m.x - right_x).abs() <= thr
+                    && m.y >= top_y + thr
+                    && m.y <= bottom_y - thr
+                {
+                    can_resize = Some(ResizeDir::E)
+                } else if (m.x - left_x).abs() <= thr && m.y >= top_y + thr && m.y <= bottom_y - thr
+                {
+                    can_resize = Some(ResizeDir::W)
+                }
+            }
+
+            if let Some(dir) = can_resize {
+                self.set_cursor_icon(dir.as_cursor());
+
+                if self.mouse.pressed(MouseBtn::Left) {
+                    self.curr_widget_action = Some(WidgetAction::Resize(dir));
+                    self.pre_action_widget_rect = Some(w_rect);
+                }
+            }
+        }
+    }
+
+    pub fn update_active(&mut self) {
+        let id = self.active_id;
+        if id.is_null() {
+            return;
+        }
+
+        let w = self.widgets.get(&id).unwrap();
+        let w_rect = w.rect;
+
+
+        let w = self.widgets.get(&id).unwrap();
+
+        let press_outside =
+            self.mouse.pressed(MouseBtn::Left) && !self.mouse.dragging(MouseBtn::Left);
+
+        // if curr_widget_action is some we are acting on the active widget, so its ok if the
+        // mouse is not over the widget
+        if self.curr_widget_action.is_none()
+            && press_outside
+            && !w.point_over(self.mouse.pos, self.resize_threshold)
+        {
+            self.active_id = WidgetId::NULL;
+            self.pre_action_widget_rect = None;
+            self.curr_widget_action = None;
+            return;
+        }
+
+        if self.mouse.dragging(MouseBtn::Left) && w.opt.flags.draggable() {
+            let w = self.widgets.get_mut(&id).unwrap();
+            let pre_action = *self.pre_action_widget_rect.get_or_insert(w.rect);
+
+            let m_start = self.mouse.drag_start(MouseBtn::Left);
+            let m_delta = self.mouse.pos - m_start;
+
+            // if we are not already performing an action set action to resizing if we are inside
+            // the resize region, else we just move the widget
+            let action = *self.curr_widget_action.get_or_insert(WidgetAction::Move);
+
+
+            match action {
+                WidgetAction::Resize(dir) => {
+                    let min_size = w.min_size();
+                    let mut new = pre_action;
+
+                    if dir.has_n() {
+                        new.min.y += m_delta.y;
+                        if new.height() < min_size.y {
+                            new.min.y = new.max.y - min_size.y;
+                        }
+                    }
+                    if dir.has_s() {
+                        new.max.y += m_delta.y;
+                        if new.height() < min_size.y {
+                            new.max.y = new.min.y + min_size.y;
+                        }
+                    }
+                    if dir.has_w() {
+                        new.min.x += m_delta.x;
+                        if new.width() < min_size.x {
+                            new.min.x = new.max.x - min_size.x;
+                        }
+                    }
+                    if dir.has_e() {
+                        new.max.x += m_delta.x;
+                        if new.width() < min_size.x {
+                            new.max.x = new.min.x + min_size.x;
+                        }
+                    }
+
+                    w.rect = new;
+                }
+                WidgetAction::Move => {
+                    w.rect = pre_action.translate(m_delta);
+                }
+            }
+        }
+
+        if !self.mouse.pressed(MouseBtn::Left) {
+            self.pre_action_widget_rect = None;
+            self.curr_widget_action = None;
+        }
+    }
+
+    pub fn handle_signal_of_id(&mut self, id: WidgetId) -> Signals {
+        let Some(w) = self.widgets.get(&id) else {
+            return Signals::NONE;
+        };
+        let w_rect = w.rect;
+
+        let mut signal = Signals::NONE;
+
+        // check if mouse is over
+        // if w.opt.flags.hoverable() && w_rect.contains(self.mouse.pos) {
+        //     signal |= Signals::MOUSE_OVER;
+        // }
+        if w.opt.flags.hoverable() && w.point_over(self.mouse.pos, self.resize_threshold) {
+            signal |= Signals::MOUSE_OVER;
+        }
+
+        // if hot_id from previous frame is id set to hovering
+        if signal.mouse_over() && self.hot_id == id {
+            signal |= Signals::HOVERING;
+        }
+
+        // if mouse pressed and is hot_id from previous frame set active
+        if w.opt.flags.clickable() && self.mouse.pressed(MouseBtn::Left) && self.hot_id == id {
+            self.active_id = id;
+        }
+
+        if signal.mouse_over()
+            && !self.mouse.dragging(MouseBtn::Left)
+            && self.is_id_over(id, self.hot_id)
+        {
+            self.hot_id = id;
+        }
+
+        if signal.hovering() {
+            if self.mouse.pressed(MouseBtn::Left) {
+                signal |= Signals::PRESSED_LEFT;
+            }
+            if self.mouse.pressed(MouseBtn::Right) {
+                signal |= Signals::PRESSED_RIGHT;
+            }
+            if self.mouse.pressed(MouseBtn::Middle) {
+                signal |= Signals::PRESSED_MIDDLE;
+            }
+
+            if self.mouse.double_clicked(MouseBtn::Left) {
+                signal |= Signals::DOUBLE_CLICKED_LEFT;
+            }
+            if self.mouse.double_clicked(MouseBtn::Right) {
+                signal |= Signals::DOUBLE_CLICKED_RIGHT;
+            }
+            if self.mouse.double_clicked(MouseBtn::Middle) {
+                signal |= Signals::DOUBLE_CLICKED_MIDDLE;
+            }
+
+            if self.mouse.dragging(MouseBtn::Left) {
+                signal |= Signals::DRAGGING_LEFT;
+            }
+            if self.mouse.dragging(MouseBtn::Right) {
+                signal |= Signals::DRAGGING_RIGHT;
+            }
+            if self.mouse.dragging(MouseBtn::Middle) {
+                signal |= Signals::DRAGGING_MIDDLE;
+            }
+        }
+
+        if signal.hovering() {
+            if self.mouse.poll_released(MouseBtn::Left) {
+                signal |= Signals::RELEASED_LEFT
+            }
+            if self.mouse.poll_released(MouseBtn::Right) {
+                signal |= Signals::RELEASED_RIGHT
+            }
+            if self.mouse.poll_released(MouseBtn::Middle) {
+                signal |= Signals::RELEASED_MIDDLE
+            }
+        }
+
+        signal
+    }
+
+    pub fn is_hovered(&mut self, id: WidgetId) -> bool {
+        id == self.hot_id
+    }
+
+    pub fn is_selected(&mut self, id: WidgetId) -> bool {
+        id == self.active_id
+    }
+
+    pub fn add_button(&mut self, label: &str) -> bool {
+        let id = self.id_from_str(label);
+        let size = Vec2::new(50.0 * label.len() as f32, 80.0);
+
+        let style =     FrameStyle {
+            fill: StateStyle {
+                default: RGBA { r: 0.20, g: 0.22, b: 0.25, a: 1.0 },
+                hovered: RGBA { r: 0.28, g: 0.30, b: 0.34, a: 1.0 },
+                active: RGBA { r: 0.12, g: 0.14, b: 0.18, a: 1.0 },
+            },
+            outline: StateStyle {
+                default: RGBA { r: 0.10, g: 0.10, b: 0.10, a: 1.0 },
+                hovered: RGBA { r: 0.35, g: 0.35, b: 0.40, a: 1.0 },
+                active: RGBA { r: 0.50, g: 0.50, b: 0.55, a: 1.0 },
+            },
+        };
+
+        let (fill, outline) = if self.is_selected(id) && self.mouse.pressed(MouseBtn::Left) {
+            (style.fill.active, style.outline.active)
+        } else if self.is_hovered(id)  {
+            (style.fill.hovered, style.outline.hovered)
+        } else {
+            (style.fill.default, style.outline.default)
+        };
+        let opt = WidgetOpt::new()
+            .size_fix(size.x, size.y)
+            .fill(fill)
+            .clickable()
+            .corner_radius(10.0)
+            .outline(outline, 5.0);
+
+        let signal = self.add_widget(label, opt);
+
+        self.end_widget();
+        signal.released()
+
+    }
+
+    pub fn add_frame(&mut self, label: &str, pos: Vec2, size: Vec2, style: FrameStyle) -> Signals {
+        let id = self.id_from_str(label);
+
+        let (fill, outline) = if self.is_selected(id) {
+            (style.fill.active, style.outline.active)
+        } else if self.is_hovered(id) {
+            (style.fill.hovered, style.outline.hovered)
+        } else {
+            (style.fill.default, style.outline.default)
+        };
+
+        let opt = WidgetOpt::new()
+            .pos_fix(pos.x, pos.y)
+            .size_fix(size.x, size.y)
+            .outline(outline, 50.0)
+            .fill(fill)
+            .draggable()
+            .resizable()
+            .corner_radius(10.0);
+
+        self.add_widget(label, opt)
+    }
+
+    pub fn parent_id(&self) -> Option<WidgetId> {
+        self.widget_stack.last().copied()
+    }
+
+    pub fn parent_widget(&self) -> Option<&Widget> {
+        self.parent_id().map(|id| self.widgets.get(&id)).flatten()
+    }
+
+    pub fn add_widget(&mut self, label: &str, opt: WidgetOpt) -> Signals {
+        let parent_id = self.parent_id();
+        let id = self.id_from_str(label);
+        self.push_id(id);
+
+        if parent_id.is_none() {
+            self.roots.push(id);
+        }
+
+        if let Some(pos) = opt.pos {
+            self.cursor = pos;
+        }
+
+        self.cursor.x += opt.padding.left;
+        self.cursor.y += opt.padding.top;
+
+
+        if self.widget_stack.is_empty() {
+            if let Some(w) = self.widgets.get(&id) {
+                self.cursor = w.rect.left_top();
+            }
+        }
+
+        if let Some(w) = self.widgets.get_mut(&id) {
+            let size = w.rect.size();
+            w.rect = Rect::from_min_size(self.cursor, size);
+
+            w.last_frame_used = self.frame_count;
+            w.opt = opt;
+        } else {
+            let mut w = Widget::new(id, opt);
+
+            let mut size: Vec2 = opt.size.into();
+            if let Some(min_x) = opt.min_size[Axis::X] {
+                size.x = size.x.max(min_x);
+            }
+            if let Some(min_y) = opt.min_size[Axis::Y] {
+                size.y = size.y.max(min_y);
+            }
+
+            w.rect = Rect::from_min_size(self.cursor, size);
+            w.last_frame_used = self.frame_count;
+            self.widgets.insert(id, w);
+            self.draw_order.push(id);
+        };
+
+        self.cursor.x += opt.margin.left;
+        self.cursor.y += opt.margin.top;
+
+        let parent = parent_id.unwrap_or(WidgetId::NULL);
+        let prev_sibling = if let Some(pid) = parent_id {
+            let p = self.widgets.get_mut(&pid).unwrap();
+            self.cursor.y += 100.0;
+
+            let tmp = p.last_child;
+            p.last_child = id;
+
+            if p.first_child.is_null() {
+                p.first_child = id;
+            }
+            tmp
+        } else {
+            WidgetId::NULL
+        };
+
+        let w = self.widgets.get_mut(&id).unwrap();
+        w.parent = parent;
+        w.first_child = WidgetId::NULL;
+        w.last_child = WidgetId::NULL;
+        w.next_sibling = WidgetId::NULL;
+        w.prev_sibling = prev_sibling;
+
+        if !prev_sibling.is_null() {
+            let sib = self.widgets.get_mut(&prev_sibling).unwrap();
+            sib.next_sibling = id;
+        }
+
+        self.widget_stack.push(id);
+        self.handle_signal_of_id(id)
+
+
+    }
+
+    pub fn set_widget_rect(&mut self, rect: Rect) {
+        if let Some(id) = self.widget_stack.last() {
+            let w = self.widgets.get_mut(id).unwrap();
+            w.rect = rect;
+        }
+    }
+
+    pub fn end_widget(&mut self) {
+        self.pop_id();
+        if let Some(id) = self.widget_stack.pop() {
+            let w = self.widgets.get(&id).unwrap();
+            self.cursor = w.rect.left_bottom();
+            self.cursor.y += w.opt.padding.bottom;
+
+            if let Some(w) = self.parent_widget() {
+                self.cursor.y += w.opt.spacing;
+            }
+        }
+    }
+
+    fn build_draw_data(&mut self) {
+        // for (_, w) in &self.widgets {
+        //     self.draw.draw_widget(w.rect, w.opt);
+        // }
+
+        for id in &self.draw_order {
+            let w = self.widgets.get(id).unwrap();
+            self.draw.draw_widget(w.rect, w.opt);
+        }
+
+        if self.draw_dbg_wireframe {
+            self.draw.debug_wireframe(2.0);
+        }
     }
 }

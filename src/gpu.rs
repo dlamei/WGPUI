@@ -424,7 +424,9 @@ impl Renderer {
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.wgpu.resize(width, height);
-        self.framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(&self.wgpu, width, height));
+        self.framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(
+            &self.wgpu, width, height,
+        ));
         self.framebuffer_resolve =
             Self::create_framebuffer_resolve_texture(&self.wgpu, width, height);
         self.depthbuffer = Self::create_depthbuffer(&self.wgpu, width, height);
