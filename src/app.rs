@@ -253,21 +253,19 @@ impl App {
         );
         self.ui_state.end_widget();
 
-
-        let signal = self.ui_state.add_widget(
+        let signal = self.ui_state.begin_widget(
             "a",
             WidgetOpt::new()
                 .fill(RGBA::INDIGO)
                 .draggable()
                 .spacing(40.0)
-                .margin(100.0)
+                .padding(100.0)
                 .resizable()
                 .corner_radius(10.0)
                 .outline(RGBA::MAGENTA, 5.0)
                 .pos_fix(100.0, 100.0)
                 .size_fix(500.0, 300.0),
         );
-
 
         if self.ui_state.add_button("hello") {
             println!("hello");

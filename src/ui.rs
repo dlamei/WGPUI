@@ -313,9 +313,7 @@ impl DrawList {
         }
 
         // maximum angular step so chord length ≤ resolution
-        let chord_step = 2.0 * (self.resolution / (2.0 * radius))
-            .clamp(-1.0, 1.0)
-            .asin();
+        let chord_step = 2.0 * (self.resolution / (2.0 * radius)).clamp(-1.0, 1.0).asin();
 
         // also cap angular step to avoid low-segment arcs at small radius
         let max_angle_step = 0.25; // ≈ 14° in radians
@@ -692,7 +690,6 @@ impl fmt::Display for Signals {
             return write!(f, "NONE");
         }
 
-
         let names = self
             .iter_names()
             .map(|(name, _)| name.to_string())
@@ -777,18 +774,25 @@ impl fmt::Debug for WidgetId {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub enum SizeTyp {
+    Pixel(f32),
+    Fit,
+
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct WidgetOpt {
     pub fill: RGBA,
     pub outline_col: RGBA,
     pub outline_width: f32,
     pub corner_radius: f32,
-    pub size: PerAxis<f32>,
-    pub min_size: PerAxis<Option<f32>>,
+    pub size: PerAxis<SizeTyp>,
+    pub min_size: Vec2,
     pub pos: Option<Vec2>,
     pub flags: WidgetFlags,
     pub layout: Layout,
     pub padding: Padding,
-    pub margin: Padding,
+    pub margin: Margin,
     pub spacing: f32,
 }
 
@@ -799,13 +803,13 @@ impl WidgetOpt {
             outline_col: RGBA::ZERO,
             outline_width: 0.0,
             corner_radius: 0.0,
-            size: PerAxis([0.0; 2]),
-            min_size: PerAxis([None; 2]),
+            size: PerAxis([SizeTyp::Fit; 2]),
+            min_size: Vec2::ZERO,
             pos: None,
             flags: WidgetFlags::NONE,
             layout: Default::default(),
             padding: Padding::ZERO,
-            margin: Padding::ZERO,
+            margin: Margin::ZERO,
             spacing: 0.0,
         }
     }
@@ -816,7 +820,12 @@ impl WidgetOpt {
     }
 
     pub fn margin(mut self, m: f32) -> Self {
-        self.margin = Padding::all(m);
+        self.margin = Margin::all(m);
+        self
+    }
+
+    pub fn padding(mut self, m: f32) -> Self {
+        self.padding = Padding::all(m);
         self
     }
 
@@ -834,17 +843,17 @@ impl WidgetOpt {
     }
 
     pub fn size_fix(mut self, x: f32, y: f32) -> Self {
-        self.size = PerAxis([x, y]);
+        self.size = PerAxis([SizeTyp::Pixel(x), SizeTyp::Pixel(y)]);
         self
     }
 
     pub fn min_size_x(mut self, min_x: f32) -> Self {
-        self.min_size[Axis::X] = Some(min_x);
+        self.min_size.x = min_x;
         self
     }
 
     pub fn min_size_y(mut self, min_y: f32) -> Self {
-        self.min_size[Axis::Y] = Some(min_y);
+        self.min_size.y = min_y;
         self
     }
 
@@ -925,8 +934,8 @@ widget_flags_fn!(resizable => RESIZABLE);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layout {
     #[default]
-    Vertical, 
-    Horizontal
+    Vertical,
+    Horizontal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -936,6 +945,7 @@ pub struct Padding {
     pub top: f32,
     pub bottom: f32,
 }
+pub type Margin = Padding;
 
 impl Padding {
     const ZERO: Padding = Padding::new(0.0, 0.0, 0.0, 0.0);
@@ -976,16 +986,19 @@ impl Padding {
 pub struct Widget {
     pub id: WidgetId,
     pub parent: WidgetId,
-    pub first_child: WidgetId,
-    pub last_child: WidgetId,
     pub next_sibling: WidgetId,
     pub prev_sibling: WidgetId,
+
+    pub first_child: WidgetId,
+    pub last_child: WidgetId,
+    pub n_children: u64,
 
     pub opt: WidgetOpt,
 
     pub rect: Rect,
     pub rel_pos: Vec2,
-    // pub pre_drag_rect: Option<Rect>,
+    pub comp_size: Vec2,
+
     pub last_frame_used: u64,
 }
 
@@ -996,10 +1009,12 @@ impl Widget {
             parent: WidgetId::NULL,
             first_child: WidgetId::NULL,
             last_child: WidgetId::NULL,
+            n_children: 0,
             next_sibling: WidgetId::NULL,
             prev_sibling: WidgetId::NULL,
             rect: Rect::ZERO,
             rel_pos: Vec2::ZERO,
+            comp_size: Vec2::ZERO,
             // pre_drag_rect: None,
             last_frame_used: 0,
             opt,
@@ -1015,8 +1030,9 @@ impl Widget {
 
     pub fn min_size(&self) -> Vec2 {
         let min = self.opt.outline_width.max(self.opt.corner_radius * 2.0);
-        let min_w = self.opt.min_size[Axis::X].unwrap_or(min);
-        let min_h = self.opt.min_size[Axis::Y].unwrap_or(min);
+        let min_w = self.opt.min_size.x.max(min);
+        let min_h = self.opt.min_size.y.max(min);
+        // let min_h = self.opt.min_size[Axis::Y].unwrap_or(min);
         Vec2::new(min_w, min_h)
     }
 }
@@ -1097,18 +1113,28 @@ pub struct State {
     pub frame_count: u64,
 
     pub widgets: rustc_hash::FxHashMap<WidgetId, Widget>,
+    /// determine widget parents
     pub widget_stack: Vec<WidgetId>,
+    /// include parent hash in child hash
+    ///
+    /// at any time new hashes can be inserted to ensure uniqueness
     pub id_stack: Vec<WidgetId>,
     pub draw_order: Vec<WidgetId>,
+    /// roots of trees that are selected for drawing
     pub roots: Vec<WidgetId>,
 
+    /// hovered element
     pub hot_id: WidgetId,
+    /// focused element
     pub active_id: WidgetId,
 
+    /// position where next widget is drawn
     pub cursor: Vec2,
+    /// generate triangle vertex & index buffers
     pub draw: DrawList,
 
     pub resize_threshold: f32,
+    /// widget state before action, while its still being modified
     pub pre_action_widget_rect: Option<Rect>,
     pub curr_widget_action: Option<WidgetAction>,
 
@@ -1121,7 +1147,9 @@ pub struct State {
 
 impl RenderPassHandle for State {
     fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-        self.draw.draw(rpass, wgpu);
+        if !self.roots.is_empty() {
+            self.draw.draw(rpass, wgpu);
+        }
     }
 }
 
@@ -1162,14 +1190,6 @@ impl State {
         }
     }
 
-    pub fn push_id(&mut self, id: WidgetId) {
-        self.id_stack.push(id);
-    }
-
-    pub fn pop_id(&mut self) {
-        self.id_stack.pop();
-    }
-
     pub fn id_from_str(&self, str: &str) -> WidgetId {
         use std::hash::{Hash, Hasher};
         if let Some(p_id) = self.id_stack.last() {
@@ -1183,7 +1203,7 @@ impl State {
 
     pub fn get_root(&self, id: WidgetId) -> WidgetId {
         if id.is_null() {
-            return id
+            return id;
         }
         let w = self.widgets.get(&id).unwrap();
         let mut p_id = w.parent;
@@ -1196,20 +1216,35 @@ impl State {
         w.id
     }
 
-    pub fn collect_children(&self, id: WidgetId) -> Vec<WidgetId> {
+    pub fn iter_children(&self, id: WidgetId) -> impl Iterator<Item = &Widget> {
+        let mut c_id = self.widgets[&id].first_child;
+        std::iter::from_fn(move || {
+            if c_id.is_null() {
+                None
+            } else {
+                let c = &self.widgets[&c_id];
+                c_id = c.next_sibling;
+                Some(c)
+            }
+        })
+    }
+
+    pub fn collect_descendants_ids(&self, id: WidgetId) -> Vec<WidgetId> {
         let mut collect = vec![];
 
         let mut ids = vec![id];
+        /// BF traversal
         while let Some(id) = ids.pop() {
             collect.push(id);
-            let w = self.widgets.get(&id).unwrap();
+            ids.extend(self.iter_children(id).map(|w| w.id));
 
-            let mut c_id = w.first_child;
-            while !c_id.is_null() {
-                ids.push(c_id);
-                let c = self.widgets.get(&c_id).unwrap();
-                c_id = c.next_sibling;
-            }
+            // let w = self.widgets[&id];
+            // let mut c_id = w.first_child;
+            // while !c_id.is_null() {
+            //     ids.push(c_id);
+            //     let c = self.widgets.get(&c_id).unwrap();
+            //     c_id = c.next_sibling;
+            // }
         }
 
         collect
@@ -1218,6 +1253,10 @@ impl State {
     pub fn end_frame(&mut self) {
         if !self.id_stack.is_empty() {
             log::warn!("end_frame: id_stack is not empty at frame end");
+        }
+
+        if let Some(w) = self.widgets.get(&WidgetId::NULL) {
+            log::warn!("widget should not have null as id:\n{:?}", w);
         }
 
         self.mouse.clear_released();
@@ -1232,14 +1271,14 @@ impl State {
 
         for &r in &self.roots {
             if r == active_root {
-                continue
+                continue;
             }
 
-            self.draw_order.extend(self.collect_children(r));
+            self.draw_order.extend(self.collect_descendants_ids(r));
         }
 
         if !active_root.is_null() {
-            let collect = self.collect_children(active_root);
+            let collect = self.collect_descendants_ids(active_root);
             self.draw_order.extend(collect);
         }
 
@@ -1248,7 +1287,6 @@ impl State {
                 .get(id)
                 .map_or(false, |w| w.last_frame_used == self.frame_count)
         });
-
 
         // if !self.active_id.is_null() {
         //     self.draw_order.push(self.active_id);
@@ -1381,7 +1419,6 @@ impl State {
         let w = self.widgets.get(&id).unwrap();
         let w_rect = w.rect;
 
-
         let w = self.widgets.get(&id).unwrap();
 
         let press_outside =
@@ -1409,7 +1446,6 @@ impl State {
             // if we are not already performing an action set action to resizing if we are inside
             // the resize region, else we just move the widget
             let action = *self.curr_widget_action.get_or_insert(WidgetAction::Move);
-
 
             match action {
                 WidgetAction::Resize(dir) => {
@@ -1459,14 +1495,9 @@ impl State {
         let Some(w) = self.widgets.get(&id) else {
             return Signals::NONE;
         };
-        let w_rect = w.rect;
 
         let mut signal = Signals::NONE;
 
-        // check if mouse is over
-        // if w.opt.flags.hoverable() && w_rect.contains(self.mouse.pos) {
-        //     signal |= Signals::MOUSE_OVER;
-        // }
         if w.opt.flags.hoverable() && w.point_over(self.mouse.pos, self.resize_threshold) {
             signal |= Signals::MOUSE_OVER;
         }
@@ -1518,9 +1549,7 @@ impl State {
             if self.mouse.dragging(MouseBtn::Middle) {
                 signal |= Signals::DRAGGING_MIDDLE;
             }
-        }
 
-        if signal.hovering() {
             if self.mouse.poll_released(MouseBtn::Left) {
                 signal |= Signals::RELEASED_LEFT
             }
@@ -1547,22 +1576,52 @@ impl State {
         let id = self.id_from_str(label);
         let size = Vec2::new(50.0 * label.len() as f32, 80.0);
 
-        let style =     FrameStyle {
+        let style = FrameStyle {
             fill: StateStyle {
-                default: RGBA { r: 0.20, g: 0.22, b: 0.25, a: 1.0 },
-                hovered: RGBA { r: 0.28, g: 0.30, b: 0.34, a: 1.0 },
-                active: RGBA { r: 0.12, g: 0.14, b: 0.18, a: 1.0 },
+                default: RGBA {
+                    r: 0.20,
+                    g: 0.22,
+                    b: 0.25,
+                    a: 1.0,
+                },
+                hovered: RGBA {
+                    r: 0.28,
+                    g: 0.30,
+                    b: 0.34,
+                    a: 1.0,
+                },
+                active: RGBA {
+                    r: 0.12,
+                    g: 0.14,
+                    b: 0.18,
+                    a: 1.0,
+                },
             },
             outline: StateStyle {
-                default: RGBA { r: 0.10, g: 0.10, b: 0.10, a: 1.0 },
-                hovered: RGBA { r: 0.35, g: 0.35, b: 0.40, a: 1.0 },
-                active: RGBA { r: 0.50, g: 0.50, b: 0.55, a: 1.0 },
+                default: RGBA {
+                    r: 0.10,
+                    g: 0.10,
+                    b: 0.10,
+                    a: 1.0,
+                },
+                hovered: RGBA {
+                    r: 0.35,
+                    g: 0.35,
+                    b: 0.40,
+                    a: 1.0,
+                },
+                active: RGBA {
+                    r: 0.50,
+                    g: 0.50,
+                    b: 0.55,
+                    a: 1.0,
+                },
             },
         };
 
         let (fill, outline) = if self.is_selected(id) && self.mouse.pressed(MouseBtn::Left) {
             (style.fill.active, style.outline.active)
-        } else if self.is_hovered(id)  {
+        } else if self.is_hovered(id) {
             (style.fill.hovered, style.outline.hovered)
         } else {
             (style.fill.default, style.outline.default)
@@ -1574,11 +1633,10 @@ impl State {
             .corner_radius(10.0)
             .outline(outline, 5.0);
 
-        let signal = self.add_widget(label, opt);
+        let signal = self.begin_widget(label, opt);
 
         self.end_widget();
         signal.released()
-
     }
 
     pub fn add_frame(&mut self, label: &str, pos: Vec2, size: Vec2, style: FrameStyle) -> Signals {
@@ -1601,23 +1659,69 @@ impl State {
             .resizable()
             .corner_radius(10.0);
 
-        self.add_widget(label, opt)
+        self.begin_widget(label, opt)
     }
 
-    pub fn parent_id(&self) -> Option<WidgetId> {
-        self.widget_stack.last().copied()
+    pub fn parent_id(&self) -> WidgetId {
+        self.widget_stack.last().copied().unwrap_or(WidgetId::NULL)
+        // self.widget_stack.last().copied()
+    }
+
+    pub fn parent_widget_mut(&mut self) -> Option<&mut Widget> {
+        let pid = self.parent_id();
+        self.widgets.get_mut(&pid)
     }
 
     pub fn parent_widget(&self) -> Option<&Widget> {
-        self.parent_id().map(|id| self.widgets.get(&id)).flatten()
+        let pid = self.parent_id();
+        self.widgets.get(&pid)
     }
 
-    pub fn add_widget(&mut self, label: &str, opt: WidgetOpt) -> Signals {
-        let parent_id = self.parent_id();
-        let id = self.id_from_str(label);
-        self.push_id(id);
+    pub fn begin_widget(&mut self, label: &str, opt: WidgetOpt) -> Signals {
+        let id = self.add_widget(label, opt);
+        self.handle_signal_of_id(id)
+    }
 
-        if parent_id.is_none() {
+    pub fn add_widget2(&mut self, label: &str, opt: WidgetOpt) -> WidgetId {
+        let id = self.id_from_str(label);
+        self.id_stack.push(id);
+        let parent = self.parent_id();
+        
+        if parent.is_null() {
+            self.roots.push(id);
+        }
+
+        let mut w = Widget::new(id, opt);
+
+        let mut prev_sibling = WidgetId::NULL;
+        if let Some(p) = self.parent_widget_mut() {
+            let last = p.last_child;
+            if p.n_children == 0 {
+                p.first_child = id;
+            }
+
+            p.last_child = id;
+            p.n_children += 1;
+            prev_sibling = last;
+        }
+
+        w.parent = parent;
+        w.first_child = WidgetId::NULL;
+        w.last_child = WidgetId::NULL;
+        w.next_sibling = WidgetId::NULL;
+        w.prev_sibling = prev_sibling;
+
+
+        self.widgets.insert(id, w);
+        id
+    }
+
+    pub fn add_widget(&mut self, label: &str, opt: WidgetOpt) -> WidgetId {
+        let id = self.id_from_str(label);
+        let parent_id = self.parent_id();
+        self.id_stack.push(id);
+
+        if parent_id.is_null() {
             self.roots.push(id);
         }
 
@@ -1625,60 +1729,67 @@ impl State {
             self.cursor = pos;
         }
 
-        self.cursor.x += opt.padding.left;
-        self.cursor.y += opt.padding.top;
+        self.cursor.x += opt.margin.left;
+        self.cursor.y += opt.margin.top;
 
-
-        if self.widget_stack.is_empty() {
+        // if widget is root we draw at same position as last frame
+        if parent_id.is_null() {
             if let Some(w) = self.widgets.get(&id) {
                 self.cursor = w.rect.left_top();
             }
         }
 
-        if let Some(w) = self.widgets.get_mut(&id) {
-            let size = w.rect.size();
-            w.rect = Rect::from_min_size(self.cursor, size);
+        let mut content_size: Vec2 = if let Some(w) = self.widgets.get(&id) {
+            w.rect.size()
+        } else { 
+            let mut s = Vec2::ZERO;
+            
+            if let SizeTyp::Pixel(x) = opt.size[Axis::X] {
+                s.x = x;
+            }
+            if let SizeTyp::Pixel(y) = opt.size[Axis::Y] {
+                s.y = y;
+            }
+            s
+            // opt.size.into()
+        };
+        content_size.x = content_size.x.max(opt.min_size.x);
+        content_size.y = content_size.y.max(opt.min_size.y);
 
-            w.last_frame_used = self.frame_count;
+        // let outer_size = Vec2::new(
+        //     content_size.x + opt.padding.left + opt.padding.right,
+        //     content_size.y + opt.padding.top + opt.padding.bottom,
+        // );
+
+        if let Some(w) = self.widgets.get_mut(&id) {
+            w.rect = Rect::from_min_size(self.cursor, content_size);
             w.opt = opt;
+            w.last_frame_used = self.frame_count;
         } else {
             let mut w = Widget::new(id, opt);
-
-            let mut size: Vec2 = opt.size.into();
-            if let Some(min_x) = opt.min_size[Axis::X] {
-                size.x = size.x.max(min_x);
-            }
-            if let Some(min_y) = opt.min_size[Axis::Y] {
-                size.y = size.y.max(min_y);
-            }
-
-            w.rect = Rect::from_min_size(self.cursor, size);
+            w.rect = Rect::from_min_size(self.cursor, content_size);
             w.last_frame_used = self.frame_count;
             self.widgets.insert(id, w);
             self.draw_order.push(id);
-        };
+        }
 
-        self.cursor.x += opt.margin.left;
-        self.cursor.y += opt.margin.top;
+        // self.cursor = self.widgets.get(&id).unwrap().rect.left_top();
+        // let w = self.widgets.get(&id).unwrap();
+        self.cursor.x += opt.padding.left;
+        self.cursor.y += opt.padding.top;
 
-        let parent = parent_id.unwrap_or(WidgetId::NULL);
-        let prev_sibling = if let Some(pid) = parent_id {
-            let p = self.widgets.get_mut(&pid).unwrap();
-            self.cursor.y += 100.0;
-
-            let tmp = p.last_child;
+        let mut prev_sibling = WidgetId::NULL;
+        if let Some(p) = self.parent_widget_mut() {
+            let last = p.last_child;
             p.last_child = id;
-
             if p.first_child.is_null() {
                 p.first_child = id;
             }
-            tmp
-        } else {
-            WidgetId::NULL
-        };
+            prev_sibling = last;
+        }
 
         let w = self.widgets.get_mut(&id).unwrap();
-        w.parent = parent;
+        w.parent = parent_id;
         w.first_child = WidgetId::NULL;
         w.last_child = WidgetId::NULL;
         w.next_sibling = WidgetId::NULL;
@@ -1690,10 +1801,88 @@ impl State {
         }
 
         self.widget_stack.push(id);
-        self.handle_signal_of_id(id)
 
-
+        id
     }
+
+    // pub fn add_widget_old(&mut self, label: &str, opt: WidgetOpt) -> Signals {
+    //     let parent_id = self.parent_id();
+    //     let id = self.id_from_str(label);
+    //     self.id_stack.push(id);
+
+    //     if parent_id.is_null() {
+    //         self.roots.push(id);
+    //     }
+
+    //     if let Some(pos) = opt.pos {
+    //         self.cursor = pos;
+    //     }
+
+    //     self.cursor.x += opt.padding.left;
+    //     self.cursor.y += opt.padding.top;
+
+    //     if self.widget_stack.is_empty() {
+    //         if let Some(w) = self.widgets.get(&id) {
+    //             self.cursor = w.rect.left_top();
+    //         }
+    //     }
+
+    //     if let Some(w) = self.widgets.get_mut(&id) {
+    //         let size = w.rect.size();
+    //         w.rect = Rect::from_min_size(self.cursor, size);
+
+    //         w.last_frame_used = self.frame_count;
+    //         w.opt = opt;
+    //     } else {
+    //         let mut w = Widget::new(id, opt);
+
+    //         let mut size: Vec2 = opt.size.into();
+    //         if let Some(min_x) = opt.min_size[Axis::X] {
+    //             size.x = size.x.max(min_x);
+    //         }
+    //         if let Some(min_y) = opt.min_size[Axis::Y] {
+    //             size.y = size.y.max(min_y);
+    //         }
+
+    //         w.rect = Rect::from_min_size(self.cursor, size);
+    //         w.last_frame_used = self.frame_count;
+    //         self.widgets.insert(id, w);
+    //         self.draw_order.push(id);
+    //     };
+
+    //     self.cursor.x += opt.margin.left;
+    //     self.cursor.y += opt.margin.top;
+
+    //     let parent = parent_id;
+    //     let prev_sibling = if !parent_id.is_null() {
+    //         let p = self.widgets.get_mut(&parent_id).unwrap();
+
+    //         let tmp = p.last_child;
+    //         p.last_child = id;
+
+    //         if p.first_child.is_null() {
+    //             p.first_child = id;
+    //         }
+    //         tmp
+    //     } else {
+    //         WidgetId::NULL
+    //     };
+
+    //     let w = self.widgets.get_mut(&id).unwrap();
+    //     w.parent = parent;
+    //     w.first_child = WidgetId::NULL;
+    //     w.last_child = WidgetId::NULL;
+    //     w.next_sibling = WidgetId::NULL;
+    //     w.prev_sibling = prev_sibling;
+
+    //     if !prev_sibling.is_null() {
+    //         let sib = self.widgets.get_mut(&prev_sibling).unwrap();
+    //         sib.next_sibling = id;
+    //     }
+
+    //     self.widget_stack.push(id);
+    //     self.handle_signal_of_id(id)
+    // }
 
     pub fn set_widget_rect(&mut self, rect: Rect) {
         if let Some(id) = self.widget_stack.last() {
@@ -1703,11 +1892,16 @@ impl State {
     }
 
     pub fn end_widget(&mut self) {
-        self.pop_id();
+        self.id_stack.pop();
         if let Some(id) = self.widget_stack.pop() {
             let w = self.widgets.get(&id).unwrap();
+
+            // move cursor to outer rect bottom (left-bottom) then add margin.bottom and parent spacing
             self.cursor = w.rect.left_bottom();
-            self.cursor.y += w.opt.padding.bottom;
+            self.cursor.y += w.opt.margin.bottom;
+
+            // self.cursor = w.rect.left_bottom();
+            // self.cursor.y += w.opt.padding.bottom;
 
             if let Some(w) = self.parent_widget() {
                 self.cursor.y += w.opt.spacing;

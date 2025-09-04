@@ -241,7 +241,17 @@ pub enum CursorIcon {
 
 impl CursorIcon {
     pub fn is_resize(self) -> bool {
-        matches!(self, Self::ResizeN | Self::ResizeNE | Self::ResizeE | Self::ResizeSE | Self::ResizeS | Self::ResizeSW | Self::ResizeW | Self::ResizeNW)
+        matches!(
+            self,
+            Self::ResizeN
+                | Self::ResizeNE
+                | Self::ResizeE
+                | Self::ResizeSE
+                | Self::ResizeS
+                | Self::ResizeSW
+                | Self::ResizeW
+                | Self::ResizeNW
+        )
     }
 }
 
