@@ -387,10 +387,10 @@ impl WidgetOpt {
         self
     }
 
-    pub fn text(mut self, s: impl Into<String>, font_size: f32, line_height: f32) -> Self {
+    pub fn text(mut self, s: impl Into<String>, font_size: f32) -> Self {
         self.text = Some(s.into());
         self.font_size = font_size;
-        self.line_height = line_height;
+        self.line_height = 1.0;
         self.flags |= WidgetFlags::DRAW_TEXT;
         self
     }
@@ -1141,7 +1141,12 @@ impl State {
         let w_rect = w.rect;
         let flags = w.opt.flags;
 
-        if !w.point_over(self.mouse.pos, self.resize_threshold) {
+        let threshold = if w.opt.flags.resizable() {
+            self.resize_threshold
+        } else {
+            0.0
+        };
+        if !w.point_over(self.mouse.pos, threshold) {
             self.hot_id = WidgetId::NULL;
             return;
         }
@@ -1313,7 +1318,12 @@ impl State {
 
         let mut signal = Signals::NONE;
 
-        if w.opt.flags.hoverable() && w.point_over(self.mouse.pos, self.resize_threshold) {
+        let threshold = if w.opt.flags.resizable() {
+            self.resize_threshold
+        } else {
+            0.0
+        };
+        if w.opt.flags.hoverable() && w.point_over(self.mouse.pos, threshold) {
             signal |= Signals::MOUSE_OVER;
         }
 
@@ -1440,7 +1450,7 @@ impl State {
 
         let mut opt = WidgetOpt::new()
             // .size_px(size.x, size.y)
-            .text(label, 48.0, 1.0)
+            .text(label, 48.0)
             .fill(fill)
             .clickable()
             .corner_radius(10.0)
@@ -1588,7 +1598,7 @@ impl State {
         w.rect_width_w_fit_size(fit_size.x);
         w.rect_height_w_fit_size(fit_size.y);
 
-        // self.cursor = w.rect.min;
+        self.cursor = w.rect.min;
         if let Some(p) = self.widgets.get(&p_id) {
             match p.opt.layout {
                 Layout::Vertical => {
@@ -2249,6 +2259,10 @@ pub struct DrawList {
 
 impl DrawList {
     pub fn new(wgpu: WGPUHandle) -> Self {
+        let mut font_db = ctext::fontdb::Database::new();
+        font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
+
+
         Self {
             vtx_buffer: Vec::new(),
             idx_buffer: Vec::new(),
@@ -2257,7 +2271,8 @@ impl DrawList {
             path_closed: false,
             resolution: 8.0,
 
-            font: ctext::FontSystem::new(),
+            // font: ctext::FontSystem::new(),
+            font: ctext::FontSystem::new_with_locale_and_db("en_US".to_owned(), font_db),
             text_swash_cache: ctext::SwashCache::new(),
             font_atlas: FontAtlas::new(&*wgpu),
             white_texture: gpu::Texture::create(&*wgpu, 1, 1, &RGBA::INDIGO.as_bytes()),
@@ -2818,27 +2833,22 @@ impl gpu::ShaderHandle for UiShader {
                 @builtin(position) pos: vec4<f32>,
                 @location(0) color: vec4<f32>,
                 @location(1) uv: vec2<f32>,
-                @location(2) tex: u32,
+                @location(2) @interpolate(flat) tex: u32,
             };
 
             @vertex
-                fn vs_main(
-                    v: Vertex,
-                ) -> VSOut {
-                    var out: VSOut;
+            fn vs_main(
+                v: Vertex,
+            ) -> VSOut {
+                var out: VSOut;
 
-                    if v.uv.x + v.uv.y != 0.0 {
-                        out.color = vec4(v.uv, 0.0, 1.0);
-                    } else {
-                        out.color = v.col;
-                    }
+                out.color = v.col;
+                out.uv = v.uv;
+                out.tex = v.tex;
+                out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
 
-                    out.uv = v.uv;
-                    out.tex = v.tex;
-                    out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
-
-                    return out;
-                }
+                return out;
+            }
 
 
             @group(0) @binding(1)
@@ -2848,13 +2858,17 @@ impl gpu::ShaderHandle for UiShader {
 
 
             @fragment
-                fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-                    if in.tex == 1 {
-                        return textureSample(texture, samp, in.uv);
-                    } else {
-                        return in.color;
-                    }
-                }
+            fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+                let c0 = textureSample(texture, samp, in.uv);
+                let c1 = in.color;
+
+                return select(c0, c1, in.tex != 1);
+                // if in.tex == 1 {
+                //     return textureSample(texture, samp, in.uv);
+                // } else {
+                //     return in.color;
+                // }
+            }
             "#;
 
         let bind_group_entries = [

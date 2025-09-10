@@ -199,6 +199,7 @@ pub struct App {
 
     last_size: UVec2,
     window: Arc<Window>,
+    windows: Vec<Arc<Window>>,
 }
 
 impl App {
@@ -213,6 +214,7 @@ impl App {
             mouse_pos: Vec2::NAN,
             last_size: UVec2::ONE,
             window: window.clone(),
+            windows: Vec::new(),
         }
     }
 
@@ -240,9 +242,9 @@ impl App {
         event: WindowEvent,
     ) {
         use WindowEvent as WE;
-        if self.window.id() != window_id {
-            return;
-        }
+        // if self.window.id() != window_id {
+        //     return;
+        // }
 
         self.on_update();
 
@@ -300,11 +302,24 @@ impl App {
                                         // .size_fit_x(),
         );
 
+        static mut toggle: bool = false;
+
         if self.ui.add_button("hello") {
-            println!("hello");
+            unsafe { toggle = !toggle; } 
+
         }
+
+        if unsafe { toggle } {
+            self.ui.begin_widget("df", WidgetOpt::new()
+                .fill(RGBA::PASTEL_ORANGE)
+                .padding(100.0)
+                .size_px(200.0, 200.0)
+            );
+            self.ui.end_widget();
+        }
+
         if self.ui.add_button("tes") {
-            println!("tes");
+            log::info!("tes");
         }
 
         self.ui.begin_widget(
@@ -331,13 +346,13 @@ impl App {
         );
 
         if signal.released() {
-            println!("inner rect released");
+            log::info!("inner rect released");
         }
 
         self.ui.end_widget();
 
         if self.ui.add_button("sdfsdfsdf") {
-            println!("dsfsdfsfsdf");
+            log::info!("dsfsdfsfsdf");
         }
 
         self.ui.end_widget();
@@ -384,6 +399,10 @@ impl App {
                 }
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
+                if self.windows.len() < 3 {
+                let window = event_loop.create_window(Window::default_attributes()).unwrap();
+                self.windows.push(Arc::new(window))
+                }
                 // let shader = ColorTint(RGBA::rand());
                 // shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
             }
