@@ -190,6 +190,7 @@ impl RGBA {
     pub const ORANGE: RGBA = RGBA::hex("#F76218");
     pub const SAFFRON: RGBA = RGBA::hex("#F2C447");
     pub const INDIGO: RGBA = RGBA::hex("#214675");
+    pub const DARK_BLUE: RGBA = RGBA::hex("#122741");
 
     pub const WHITE: RGBA = RGBA::rgb(255, 255, 255);
     pub const BLACK: RGBA = RGBA::rgb(0, 0, 0);
@@ -202,7 +203,7 @@ impl RGBA {
     pub const PASTEL_ORANGE: RGBA = RGBA::hex("#FFD1B5");
     pub const PASTEL_MINT: RGBA = RGBA::hex("#B5FFF9");
 
-    pub const DEBUG: RGBA = RGBA::rgb(200, 0, 100);
+    pub const CARMINE: RGBA = RGBA::rgb(200, 0, 100);
 
     pub const ZERO: RGBA = RGBA::rgba(0, 0, 0, 0);
 }

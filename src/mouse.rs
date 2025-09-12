@@ -39,6 +39,9 @@ struct ButtonRec {
     last_press_was_short: bool,
     dragging: bool,
 
+    /// is set when pressed goes from true -> false
+    ///
+    /// must be cleared manually
     released: bool,
 }
 
@@ -149,6 +152,8 @@ impl MouseRec {
             state.press_time = Some(now);
             state.dragging = false;
 
+            // TODO[BUG]: this is probably (definitely) wrong
+            // we need some differentiation between press and click
             state.double_press = if let Some(last_release) = state.last_release_time {
                 now.duration_since(last_release) <= self.double_click_time
                     && state.last_press_was_short
@@ -189,14 +194,6 @@ impl MouseRec {
     pub fn drag_start(&self, button: MouseBtn) -> Vec2 {
         self.buttons[button].press_start_pos
     }
-
-    // pub fn clicked(&self, button: MouseBtn) -> bool {
-    //     let state = &self.buttons[button];
-    //     state.pressed
-    //         && state
-    //             .press_time
-    //             .map_or(false, |t| t.elapsed() < Duration::from_millis(16))
-    // }
 
     pub fn double_clicked(&self, button: MouseBtn) -> bool {
         self.buttons[button].double_press

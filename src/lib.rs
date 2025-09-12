@@ -82,6 +82,8 @@ pub(crate) use cosmic_text as ctext;
 pub struct ClearScreen(pub RGBA);
 
 impl gpu::RenderPassHandle for ClearScreen {
+    const LABEL: &'static str = "clear_screen_pass";
+
     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
         wgpu::LoadOp::Clear(self.0.into())
     }

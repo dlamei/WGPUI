@@ -107,6 +107,16 @@ pub enum Axis {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PerAxis<T>(pub [T; 2]);
 
+impl<T> PerAxis<T> {
+    pub fn x(&self) -> &T {
+        &self.0[0]
+    }
+
+    pub fn y(&self) -> &T {
+        &self.0[1]
+    }
+}
+
 impl From<PerAxis<f32>> for Vec2 {
     fn from(value: PerAxis<f32>) -> Self {
         Vec2::new(value.0[0], value.0[1])
@@ -177,6 +187,7 @@ impl fmt::Debug for WidgetId {
 pub enum SizeTyp {
     Px(f32),
     Fit,
+    Text,
 }
 
 impl SizeTyp {
@@ -186,6 +197,10 @@ impl SizeTyp {
 
     pub fn is_px(&self) -> bool {
         matches!(self, Self::Px(_))
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self, Self::Text)
     }
 }
 
@@ -224,46 +239,61 @@ impl Size {
         (self.min[a], self.max[a])
     }
 
-    pub fn min_px_bound(&self) -> Vec2 {
-        let min_x = match self.min[Axis::X] {
-            SizeTyp::Px(x) => x,
-            SizeTyp::Fit => 0.0,
-        };
-        let min_y = match self.min[Axis::Y] {
-            SizeTyp::Px(y) => y,
-            SizeTyp::Fit => 0.0,
-        };
+    // pub fn min_px_bound(&self) -> Vec2 {
+    //     let min_x = match self.min[Axis::X] {
+    //         SizeTyp::Px(x) => x,
+    //         SizeTyp::Fit => 0.0,
+    //     };
+    //     let min_y = match self.min[Axis::Y] {
+    //         SizeTyp::Px(y) => y,
+    //         SizeTyp::Fit => 0.0,
+    //     };
 
-        Vec2::new(min_x, min_y)
-    }
+    //     Vec2::new(min_x, min_y)
+    // }
 
-    pub fn max_px_bound(&self) -> Vec2 {
-        let min_x = match self.max[Axis::X] {
-            SizeTyp::Px(x) => x,
-            SizeTyp::Fit => f32::INFINITY,
-        };
-        let min_y = match self.max[Axis::Y] {
-            SizeTyp::Px(y) => y,
-            SizeTyp::Fit => f32::INFINITY,
-        };
+    // pub fn max_px_bound(&self) -> Vec2 {
+    //     let min_x = match self.max[Axis::X] {
+    //         SizeTyp::Px(x) => x,
+    //         SizeTyp::Fit => f32::INFINITY,
+    //     };
+    //     let min_y = match self.max[Axis::Y] {
+    //         SizeTyp::Px(y) => y,
+    //         SizeTyp::Fit => f32::INFINITY,
+    //     };
 
-        Vec2::new(min_x, min_y)
-    }
+    //     Vec2::new(min_x, min_y)
+    // }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetOpt {
-    pub fill: RGBA,
-    pub outline_col: RGBA,
+    pub fill_color: RGBA,
+    pub outline_color: RGBA,
     pub outline_width: f32,
     pub corner_radius: f32,
-    // pub size: PerAxis<SizeTyp>,
-    // pub min_size: Vec2,
-    pub size: Size,
+
+    /// defines the size of the widget
+    ///
+    /// used during creation and if the widget is resizable can be overwritten
+    pub size: PerAxis<SizeTyp>,
+
+    /// defines the minimum size of a resizable widget
+    ///
+    /// if resizable is not set, this is ignored
+    pub min_size: PerAxis<SizeTyp>,
+
+    /// defines the maximum size of a resizable widget
+    ///
+    /// if resizable is not set, this is ignored
+    pub max_size: PerAxis<SizeTyp>,
 
     pub text: Option<String>,
     pub font_size: f32,
-    pub line_height: f32,
+    pub text_color: RGBA,
+
+    // temp
+    pub tex_id: u32,
 
     pub pos: Option<Vec2>,
     pub flags: WidgetFlags,
@@ -277,44 +307,49 @@ macro_rules! widget_opt_size_fn {
     ($kind:ident ($($x:ident: $ty:ty),*) $e:expr ) => {
         paste::paste! {
 
+            // set x value
+            pub fn [<size_x_ $kind>](mut self, $($x:$ty),*) -> Self {
+                self.size[Axis::X] = $e;
+                self
+            }
+
+            // set y value
+            pub fn [<size_y_ $kind>](mut self, $($x:$ty),*) -> Self {
+                self.size[Axis::Y] = $e;
+                self
+            }
+
+            // set min value for x and y
+            pub fn [<size_ $kind>](self, $([< $x _x >]:$ty,)* $([< $x _y >]:$ty),*) -> Self {
+                self
+                    .[<size_x_ $kind>]($([< $x _x >]),*)
+                    .[<size_y_ $kind>]($([< $x _y >]),*)
+            }
+
             // set min x value
             pub fn [<size_min_x_ $kind>](mut self, $($x:$ty),*) -> Self {
-                self.size.min[Axis::X] = $e;
+                self.min_size[Axis::X] = $e;
                 self
             }
 
             // set min y value
             pub fn [<size_min_y_ $kind>](mut self, $($x:$ty),*) -> Self {
-                self.size.min[Axis::Y] = $e;
+                self.min_size[Axis::Y] = $e;
                 self
             }
 
             // set max x value
             pub fn [<size_max_x_ $kind>](mut self, $($x:$ty),*) -> Self {
-                self.size.max[Axis::X] = $e;
+                self.max_size[Axis::X] = $e;
                 self
             }
 
             // set max y value
             pub fn [<size_max_y_ $kind>](mut self, $($x:$ty),*) -> Self {
-                self.size.max[Axis::Y] = $e;
+                self.max_size[Axis::Y] = $e;
                 self
             }
 
-
-            // assign the same value for min and max for x
-            pub fn [<size_x_ $kind>](self, $($x:$ty),*) -> Self {
-                self
-                    .[<size_min_x_ $kind>]($($x),*)
-                    .[<size_max_x_ $kind>]($($x),*)
-            }
-
-            // assign the same value for min and max for y
-            pub fn [<size_y_ $kind>](self, $($x:$ty),*) -> Self {
-                self
-                    .[<size_min_y_ $kind>]($($x),*)
-                    .[<size_max_y_ $kind>]($($x),*)
-            }
 
             // set min value for x and y
             pub fn [<size_min_ $kind>](self, $([< $x _min_x >]:$ty,)* $([< $x _min_y >]:$ty),*) -> Self {
@@ -330,13 +365,6 @@ macro_rules! widget_opt_size_fn {
                     .[<size_max_y_ $kind>]($([< $x _max_y >]),*)
             }
 
-            // assign the same value for min and max for x and y
-            pub fn [<size_ $kind>](self, $([< $x _x >]:$ty,)* $([< $x _y >]:$ty),*) -> Self {
-                self
-                    .[<size_x_ $kind>]($([< $x _x >]),*)
-                    .[<size_y_ $kind>]($([< $x _y >]),*)
-            }
-
         }
     }
 }
@@ -344,17 +372,23 @@ macro_rules! widget_opt_size_fn {
 impl WidgetOpt {
     pub fn new() -> Self {
         Self {
-            fill: RGBA::ZERO,
-            outline_col: RGBA::ZERO,
+            fill_color: RGBA::ZERO,
+            outline_color: RGBA::ZERO,
             outline_width: 0.0,
             corner_radius: 0.0,
             // size: PerAxis([SizeTyp::Fit; 2]),
-            size: Size::NONE,
+            size: PerAxis([SizeTyp::Fit; 2]),
+            min_size: PerAxis([SizeTyp::Px(0.0); 2]),
+            max_size: PerAxis([SizeTyp::Px(f32::INFINITY); 2]),
             // min_size: Vec2::ZERO,
             pos: None,
+
             text: None,
             font_size: 0.0,
-            line_height: 0.0,
+            text_color: RGBA::WHITE,
+
+            tex_id: 0,
+
             flags: WidgetFlags::NONE,
             layout: Default::default(),
             padding: Padding::ZERO,
@@ -365,12 +399,14 @@ impl WidgetOpt {
 
     widget_opt_size_fn!(px(px: f32) SizeTyp::Px(px));
     widget_opt_size_fn!(fit() SizeTyp::Fit);
+    widget_opt_size_fn!(text() SizeTyp::Text);
 
     pub fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing;
         self
     }
 
+    // TODO[BUG]: margin is broken, test multiple widgets in a line wiht margins
     pub fn margin(mut self, m: f32) -> Self {
         self.margin = Margin::all(m);
         self
@@ -382,7 +418,7 @@ impl WidgetOpt {
     }
 
     pub fn fill(mut self, fill: RGBA) -> Self {
-        self.fill = fill;
+        self.fill_color = fill;
         self.flags |= WidgetFlags::DRAW_FILL;
         self
     }
@@ -390,13 +426,17 @@ impl WidgetOpt {
     pub fn text(mut self, s: impl Into<String>, font_size: f32) -> Self {
         self.text = Some(s.into());
         self.font_size = font_size;
-        self.line_height = 1.0;
         self.flags |= WidgetFlags::DRAW_TEXT;
         self
     }
 
+    pub fn text_color(mut self, color: RGBA) -> Self {
+        self.text_color = color;
+        self
+    }
+
     pub fn outline(mut self, col: RGBA, width: f32) -> Self {
-        self.outline_col = col;
+        self.outline_color = col;
         self.outline_width = width;
         self.flags |= WidgetFlags::DRAW_OUTLINE;
         self
@@ -413,47 +453,15 @@ impl WidgetOpt {
     }
 
     pub fn text_meta(&self) -> TextMeta {
+        let line_height = 1.0;
         TextMeta::new(
             self.text.clone().unwrap_or("".into()),
             self.font_size,
-            self.line_height,
+            line_height,
         )
     }
 
-    // pub fn size_fix(mut self, x: f32, y: f32) -> Self {
-    //     self.size = PerAxis([SizeTyp::Px(x), SizeTyp::Px(y)]);
-    //     self
-    // }
-
-    // pub fn size_fit_x(mut self) -> Self {
-    //     self.size[Axis::X] = SizeTyp::Fit;
-    //     self
-    // }
-
-    // pub fn size_fit_y(mut self) -> Self {
-    //     self.size[Axis::Y] = SizeTyp::Fit;
-    //     self
-    // }
-
-    // pub fn size_fit(self) -> Self {
-    //     self.size_fit_x().size_fit_y()
-    // }
-
-    // pub fn min_size_x(mut self, min_x: f32) -> Self {
-    //     self.min_size.x = min_x;
-    //     self
-    // }
-
-    // pub fn min_size_y(mut self, min_y: f32) -> Self {
-    //     self.min_size.y = min_y;
-    //     self
-    // }
-
-    // pub fn min_size(self, x: f32, y: f32) -> Self {
-    //     self.min_size_x(x).min_size_y(y)
-    // }
-
-    pub fn pos_fix(mut self, x: f32, y: f32) -> Self {
+    pub fn pos_px(mut self, x: f32, y: f32) -> Self {
         self.pos = Some(Vec2::new(x, y));
         self
     }
@@ -488,6 +496,9 @@ impl WidgetOpt {
                 self.flags |= WidgetFlags::RESIZABLE_W;
             }
         }
+
+        // TODO[NOTE]: add outline hoverable?
+        self.flags |= WidgetFlags::HOVERABLE;
         self
     }
 
@@ -530,8 +541,6 @@ bitflags::bitflags! {
         const RESIZABLE_SE   = widget_bits!(RESIZABLE_S | RESIZABLE_E);
         const RESIZABLE_NW   = widget_bits!(RESIZABLE_N | RESIZABLE_W);
         const RESIZABLE_SW   = widget_bits!(RESIZABLE_S | RESIZABLE_W);
-        // const RESIZABLE_X   = widget_bits!(RESIZABLE_E | RESIZABLE_W);
-        // const RESIZABLE_Y   = widget_bits!(RESIZABLE_N | RESIZABLE_S);
         const RESIZABLE_ALL     = widget_bits!(RESIZABLE_N | RESIZABLE_E | RESIZABLE_S | RESIZABLE_W);
     }
 }
@@ -627,35 +636,33 @@ impl Padding {
             Axis::Y => self.top + self.bottom,
         }
     }
-
-    pub fn axis_padding(&self, a: Axis) -> [f32; 2] {
-        match a {
-            Axis::X => [self.left, self.right],
-            Axis::Y => [self.top, self.bottom],
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Widget {
     pub id: WidgetId,
     pub parent: WidgetId,
-    pub next_sibling: WidgetId,
-    pub prev_sibling: WidgetId,
 
-    pub first_child: WidgetId,
-    pub last_child: WidgetId,
+    // siblings
+    pub next: WidgetId,
+    pub prev: WidgetId,
+
+    // children
+    pub first: WidgetId,
+    pub last: WidgetId,
     pub n_children: u64,
 
     pub opt: WidgetOpt,
 
+    /// depending on layout direction sum or max of children sizes + margins and spacing
+    pub fit_size: Vec2,
+    /// size of the widgets text, zero if text is empty
+    pub text_size: Vec2,
+    /// final shape of the widget when drawn
     pub rect: Rect,
-    pub rel_pos: Vec2,
-    pub comp_size: Vec2,
-    pub comp_min_size: Vec2,
-    pub comp_max_size: Vec2,
-    // pub frac_units: Vec2,
+
     pub last_frame_used: u64,
+    pub frame_created: u64,
 }
 
 impl Widget {
@@ -663,73 +670,28 @@ impl Widget {
         Self {
             id,
             parent: WidgetId::NULL,
-            first_child: WidgetId::NULL,
-            last_child: WidgetId::NULL,
+            first: WidgetId::NULL,
+            last: WidgetId::NULL,
             n_children: 0,
-            next_sibling: WidgetId::NULL,
-            prev_sibling: WidgetId::NULL,
+            next: WidgetId::NULL,
+            prev: WidgetId::NULL,
             rect: Rect::ZERO,
-            rel_pos: Vec2::ZERO,
-            comp_size: Vec2::ZERO,
-            comp_min_size: Vec2::ZERO,
-            comp_max_size: Vec2::INFINITY,
-            // frac_units: Vec2::ZERO,
-            // pre_drag_rect: None,
+            fit_size: Vec2::ZERO,
+            text_size: Vec2::ZERO,
             last_frame_used: 0,
+            frame_created: 0,
             opt,
         }
-    }
-
-    pub fn rect_width_w_fit_size(&mut self, fit_size: f32) {
-        let (lo, hi) = self.opt.size.axis_range(Axis::X);
-        let width = self.rect.width();
-        let lo = match lo {
-            SizeTyp::Px(x) => x,
-            SizeTyp::Fit => fit_size,
-        }
-        .max(self.corner_circle_size().x);
-        let hi = match hi {
-            SizeTyp::Px(x) => x,
-            SizeTyp::Fit => fit_size,
-        }
-        .max(self.corner_circle_size().x);
-
-        let lo = lo.min(hi);
-
-        let new_width = width.clamp(lo, hi);
-        self.rect.set_width(new_width)
-    }
-
-    pub fn rect_height_w_fit_size(&mut self, fit_size: f32) {
-        let (lo, hi) = self.opt.size.axis_range(Axis::Y);
-        let height = self.rect.height();
-        let lo = match lo {
-            SizeTyp::Px(y) => y,
-            SizeTyp::Fit => fit_size,
-        }
-        .max(self.corner_circle_size().y);
-        let hi = match hi {
-            SizeTyp::Px(y) => y,
-            SizeTyp::Fit => fit_size,
-        }
-        .max(self.corner_circle_size().y);
-
-        let lo = lo.min(hi);
-
-        let new_height = height.clamp(lo, hi);
-        self.rect.set_height(height.clamp(lo, hi))
     }
 
     /// clear data that must be re-computed every frame
     pub fn reset_frame_data(&mut self) {
         self.n_children = 0;
         self.parent = WidgetId::NULL;
-        self.next_sibling = WidgetId::NULL;
-        self.prev_sibling = WidgetId::NULL;
-        self.first_child = WidgetId::NULL;
-        self.last_child = WidgetId::NULL;
-        self.comp_min_size = Vec2::ZERO;
-        self.comp_max_size = Vec2::INFINITY;
+        self.next = WidgetId::NULL;
+        self.prev = WidgetId::NULL;
+        self.first = WidgetId::NULL;
+        self.last = WidgetId::NULL;
     }
 
     pub fn point_over(&self, point: Vec2, threashold: f32) -> bool {
@@ -739,33 +701,49 @@ impl Widget {
         Rect::from_min_max(min, max).contains(point)
     }
 
-    /// determine the minimum size of a widget
-    ///
-    /// either use corner radius, optional min_size or comp_min_size which is calculated every
-    /// frame based on other properties like SizeTyp::Fit
-    pub fn total_min_size(&self) -> Vec2 {
+    // TODO[NOTE]: how do we handle if e.g. min is larger than max?
+    // here the max is just the bigger of raw_min and raw_max
+    // pub fn compute_max_size(&self) -> Vec2 {
+    //     let rmax = self.compute_raw_max_size();
+    //     let rmin = self.compute_raw_min_size();
+    //     rmin.max(rmax)
+    // }
+
+    // pub fn compute_min_size(&self) -> Vec2 {
+    //     let rmax = self.compute_raw_max_size();
+    //     let rmin = self.compute_raw_min_size();
+    //     rmin.min(rmax)
+    // }
+
+    pub fn compute_min_size(&self) -> Vec2 {
         let min = self.opt.outline_width.max(self.opt.corner_radius * 2.0);
-        let min_w = self.comp_min_size.x.max(min);
-        let min_h = self.comp_min_size.y.max(min);
-        Vec2::new(min_w, min_h)
+        let min = Vec2::splat(min).max(self.opt.padding.axis_sum());
+
+        let min_x = match self.opt.min_size[Axis::X] {
+            SizeTyp::Px(x) => x,
+            SizeTyp::Fit => self.fit_size.x,
+            SizeTyp::Text => self.text_size.x,
+        };
+        let min_y = match self.opt.min_size[Axis::Y] {
+            SizeTyp::Px(y) => y,
+            SizeTyp::Fit => self.fit_size.y,
+            SizeTyp::Text => self.text_size.y,
+        };
+        min.max(Vec2::new(min_x, min_y))
     }
 
-    pub fn corner_circle_size(&self) -> Vec2 {
-        let min = self.opt.outline_width.max(self.opt.corner_radius * 2.0);
-        Vec2::new(min, min)
-    }
-
-    /// determine the maximum size of a widget
-    ///
-    /// either use corner radius, optional min_size or comp_min_size which is calculated every
-    /// frame based on other properties like SizeTyp::Fit
-    pub fn total_max_size(&self) -> Vec2 {
-        // let min = self.opt.outline_width.max(self.opt.corner_radius * 2.0);
-        // let max_w = self.comp_max_size.x.max(min);
-        // let max_h = self.comp_max_size.y.max(min);
-        // Vec2::new(max_w, max_h)
-        // min
-        self.comp_max_size
+    pub fn compute_max_size(&self) -> Vec2 {
+        let max_x = match self.opt.max_size[Axis::X] {
+            SizeTyp::Px(x) => x,
+            SizeTyp::Fit => self.fit_size.x,
+            SizeTyp::Text => self.text_size.x,
+        };
+        let max_y = match self.opt.max_size[Axis::Y] {
+            SizeTyp::Px(y) => y,
+            SizeTyp::Fit => self.fit_size.y,
+            SizeTyp::Text => self.text_size.y,
+        };
+        Vec2::new(max_x, max_y)
     }
 }
 
@@ -776,11 +754,11 @@ pub struct StateStyle {
     pub hovered: RGBA,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FrameStyle {
-    pub fill: StateStyle,
-    pub outline: StateStyle,
-}
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// pub struct FrameStyle {
+//     pub fill: StateStyle,
+//     pub outline: StateStyle,
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Dir {
@@ -830,7 +808,7 @@ pub enum WidgetAction {
         prev_rect: Rect,
     },
     Move {
-        prev_pos: Vec2,
+        start_pos: Vec2,
         id: WidgetId,
     },
 }
@@ -855,6 +833,7 @@ pub struct State {
     /// focused element
     pub active_id: WidgetId,
 
+    // TODO[NOTE]: maybe allow for cursor beging the center, top left, etc... when placing the widget
     /// position where next widget is drawn
     pub cursor: Vec2,
     /// generate triangle vertex & index buffers
@@ -866,63 +845,21 @@ pub struct State {
     pub cursor_icon: CursorIcon,
     pub cursor_icon_changed: bool,
 
-    // pub style: Style,
     pub draw_dbg_wireframe: bool,
     pub window: Arc<Window>,
-    // text
-    // pub font: ctext::FontSystem,
-    // pub text_swash_cache: ctext::SwashCache,
-    // pub font_atlas: FontAtlas,
-    // pub white_texture: gpu::Texture,
-    // pub text_cache: TextCache,
-    // pub next_text_cache: TextCache,
 }
 
-impl gpu::RenderPassHandle for State {
-    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-        if !self.roots.is_empty() {
-            self.draw.draw(rpass, wgpu);
-            // return;
-        }
+impl ops::Index<WidgetId> for State {
+    type Output = Widget;
 
-        // let vtx = wgpu
-        //     .device
-        //     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //         label: Some("ui_vtx_buffer"),
-        //         contents: &bytemuck::cast_slice(&self.draw.vtx_buffer),
-        //         usage: wgpu::BufferUsages::VERTEX,
-        //     });
+    fn index(&self, index: WidgetId) -> &Self::Output {
+        self.widgets.get(&index).unwrap()
+    }
+}
 
-        // let idx = wgpu
-        //     .device
-        //     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //         label: Some("ui_idx_buffer"),
-        //         contents: &bytemuck::cast_slice(&self.draw.idx_buffer),
-        //         usage: wgpu::BufferUsages::INDEX,
-        //     });
-
-        // let global_uniform = GlobalUniform {
-        //     proj: Mat4::orthographic_lh(
-        //         0.0,
-        //         self.draw.screen_size.x,
-        //         self.draw.screen_size.y,
-        //         0.0,
-        //         -1.0,
-        //         0.0,
-        //     ),
-        // };
-        // // .build_bind_group(wgpu);
-
-        // let bind_group = build_bind_group(global_uniform, self.white_texture.view(), wgpu);
-
-        // rpass.set_bind_group(0, &bind_group, &[]);
-
-        // rpass.set_vertex_buffer(0, vtx.slice(..));
-        // rpass.set_index_buffer(idx.slice(..), wgpu::IndexFormat::Uint32);
-
-        // rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
-
-        // rpass.draw_indexed(0..self.draw.idx_buffer.len() as u32, 0, 0..1);
+impl ops::IndexMut<WidgetId> for State {
+    fn index_mut(&mut self, index: WidgetId) -> &mut Self::Output {
+        self.widgets.get_mut(&index).unwrap()
     }
 }
 
@@ -946,12 +883,6 @@ impl State {
             draw_dbg_wireframe: false,
             resize_threshold: 10.0,
             window: window.into(),
-            // font: ctext::FontSystem::new(),
-            // text_swash_cache: ctext::SwashCache::new(),
-            // font_atlas: FontAtlas::new(wgpu),
-            // white_texture: gpu::Texture::create(wgpu, 1, 1, &RGBA::INDIGO.as_bytes()),
-            // text_cache: TextCache::new(),
-            // next_text_cache: TextCache::new(),
         }
     }
 
@@ -985,6 +916,80 @@ impl State {
         // );
     }
 
+    pub fn debug_window(&mut self, dt: Duration) {
+        self.begin_widget(
+            "debug",
+            WidgetOpt::new()
+                .fill(RGBA::INDIGO)
+                .size_min_fit()
+                .draggable()
+                .padding(40.0)
+                .resizable()
+                .corner_radius(10.0)
+                .spacing(18.0)
+                .outline(RGBA::DARK_BLUE, 5.0),
+        );
+
+        self.add_label("Debug", 128.0);
+        self.offset_cursor_y(32.0);
+
+        self.add_widget(
+            "dt",
+            WidgetOpt::new()
+                .text(&format!("dt: {dt:?}"), 32.0)
+                .size_text()
+                .fill(RGBA::BLACK),
+        );
+        self.end_widget();
+
+        self.add_widget(
+            "hot",
+            WidgetOpt::new()
+                .text(&format!("hot: {}", self.hot_id), 32.0)
+                .size_text()
+                .fill(RGBA::BLACK),
+        );
+        self.end_widget();
+
+        self.add_widget(
+            "active",
+            WidgetOpt::new()
+                .text(&format!("active: {}", self.active_id), 32.0)
+                .size_text()
+                .fill(RGBA::BLACK),
+        );
+        self.end_widget();
+
+        self.add_widget(
+            "action",
+            WidgetOpt::new()
+                .text(
+                    &format!(
+                        "action: {}",
+                        self.curr_widget_action
+                            .map(|a| format!("{a:?}"))
+                            .unwrap_or("".into())
+                    ),
+                    32.0,
+                )
+                .size_text()
+                .fill(RGBA::BLACK),
+        );
+        self.end_widget();
+
+        let mut opt = WidgetOpt::new().size_px(500.0, 500.0);
+        opt.tex_id = 1;
+        self.add_widget("texture atlas", opt);
+
+        // let tex_size = Vec2::splat(100.0);
+        // self.draw.draw_uv_rect(Rect::from_min_size(self.cursor, tex_size), Vec2::ZERO, Vec2::splat(1.0), RGBA::WHITE);
+        // self.offset_cursor_y(tex_size.y);
+
+        self.end_widget();
+
+        self.end_widget();
+    }
+
     pub fn end_frame(&mut self) {
         if !self.id_stack.is_empty() {
             log::warn!("end_frame: id_stack is not empty at frame end");
@@ -1005,9 +1010,14 @@ impl State {
 
         let active_root = self.get_root(self.active_id);
 
+        // we want to bring the active ui tree to the front, but must keep the draw order otherwise
+        // the same
+        let mut roots_draw_order = self.roots.clone();
+        roots_draw_order.sort_by_key(|x| self.draw_order.iter().position(|y| y == x).unwrap());
+
         self.draw_order.clear();
 
-        for &r in &self.roots {
+        for r in roots_draw_order {
             if r != active_root {
                 self.draw_order.extend(self.collect_descendants_ids(r));
             }
@@ -1062,6 +1072,12 @@ impl State {
         }
     }
 
+    /// provides the id of the next widget given the widgets label
+    ///
+    pub fn next_id(&self, str: &str) -> WidgetId {
+        self.id_from_str(str)
+    }
+
     pub fn get_root(&self, id: WidgetId) -> WidgetId {
         if id.is_null() {
             return id;
@@ -1078,26 +1094,26 @@ impl State {
     }
 
     pub fn iter_children(&self, id: WidgetId) -> impl Iterator<Item = &Widget> {
-        let mut c_id = self.widgets[&id].first_child;
+        let mut c_id = self.widgets[&id].first;
         std::iter::from_fn(move || {
             if c_id.is_null() {
                 None
             } else {
                 let c = &self.widgets[&c_id];
-                c_id = c.next_sibling;
+                c_id = c.next;
                 Some(c)
             }
         })
     }
 
     pub fn iter_children_ids(&self, id: WidgetId) -> impl Iterator<Item = WidgetId> {
-        let mut c_id = self.widgets[&id].first_child;
+        let mut c_id = self.widgets[&id].first;
         std::iter::from_fn(move || {
             if c_id.is_null() {
                 None
             } else {
                 let c = &self.widgets[&c_id];
-                c_id = c.next_sibling;
+                c_id = c.next;
                 Some(c.id)
             }
         })
@@ -1164,6 +1180,7 @@ impl State {
             self.active_id = id;
         }
 
+        // TODO[BUG]: starting a drag and then crossing the outline should not result in resizing
         let mut can_resize = None;
         if flags.resizable() && self.curr_widget_action.is_none() {
             let r = &w_rect;
@@ -1230,6 +1247,7 @@ impl State {
         }
     }
 
+    // TODO[NOTE]: moving a widget leads to its children being a frame behind
     fn handle_widget_action(&mut self) {
         let m_start = self.mouse.drag_start(MouseBtn::Left);
         let m_delta = self.mouse.pos - m_start;
@@ -1242,9 +1260,8 @@ impl State {
                 }
                 let w = self.widgets.get_mut(&id).unwrap();
 
-                let min_size = w.total_min_size();
-                let max_size = w.total_max_size();
-                // TODO: clamp when resizing not working
+                let min_size = w.compute_min_size();
+                let max_size = w.compute_max_size();
 
                 let mut r = prev_rect;
 
@@ -1253,11 +1270,17 @@ impl State {
                     if r.height() < min_size.y {
                         r.min.y = r.max.y - min_size.y;
                     }
+                    if r.height() > max_size.y {
+                        r.min.y = r.max.y - max_size.y;
+                    }
                 }
                 if dir.has_s() {
                     r.max.y += m_delta.y;
                     if r.height() < min_size.y {
                         r.max.y = r.min.y + min_size.y;
+                    }
+                    if r.height() > max_size.y {
+                        r.max.y = r.min.y + max_size.y;
                     }
                 }
                 if dir.has_w() {
@@ -1265,17 +1288,23 @@ impl State {
                     if r.width() < min_size.x {
                         r.min.x = r.max.x - min_size.x;
                     }
+                    if r.width() > max_size.x {
+                        r.min.x = r.max.x - max_size.x;
+                    }
                 }
                 if dir.has_e() {
                     r.max.x += m_delta.x;
                     if r.width() < min_size.x {
                         r.max.x = r.min.x + min_size.x;
                     }
+                    if r.width() > max_size.x {
+                        r.max.x = r.min.x + max_size.x;
+                    }
                 }
 
                 w.rect = r;
             }
-            Some(WidgetAction::Move { prev_pos, id }) => {
+            Some(WidgetAction::Move { start_pos, id }) => {
                 if !self.mouse.pressed(MouseBtn::Left) {
                     self.curr_widget_action = None;
                     return;
@@ -1285,12 +1314,12 @@ impl State {
 
                 // NOTE: cancel action
                 // if self.mouse.pressed(MouseBtn::Right) {
-                //     w.rect = Rect::from_min_size(prev_pos, size);
+                //     w.rect = Rect::from_min_size(start_pos, size);
                 //     self.curr_widget_action = None;
                 //     self.active_id = WidgetId::NULL;
                 //     return
                 // }
-                let pos = prev_pos + m_delta;
+                let pos = start_pos + m_delta;
                 w.rect = Rect::from_min_size(pos, size);
             }
             _ => (),
@@ -1305,6 +1334,14 @@ impl State {
 
         let w = self.widgets.get(&id).unwrap();
 
+        if !self.mouse.dragging(MouseBtn::Left)
+            && self.mouse.pressed(MouseBtn::Left)
+            && !w.point_over(self.mouse.pos, 0.0)
+        {
+            self.active_id = WidgetId::NULL;
+            return;
+        }
+
         // if mouse is dragged over active draggable widget and we are not performing any action,
         // start moving the widget
         if self.mouse.dragging(MouseBtn::Left)
@@ -1313,12 +1350,13 @@ impl State {
             && self.curr_widget_action.is_none()
         {
             self.curr_widget_action = Some(WidgetAction::Move {
-                prev_pos: w.rect.min,
+                start_pos: w.rect.min,
                 id: w.id,
             });
         }
     }
 
+    // TODO[BUG] : widget is not resizable if its not clickable
     pub fn handle_signal_of_id(&mut self, id: WidgetId) -> Signals {
         let Some(w) = self.widgets.get(&id) else {
             return Signals::NONE;
@@ -1335,12 +1373,41 @@ impl State {
             signal |= Signals::MOUSE_OVER;
         }
 
-        if signal.mouse_over()
-            && !self.mouse.dragging(MouseBtn::Left)
-            && self.is_id_over(id, self.hot_id)
-        {
-            self.hot_id = id;
+        if signal.mouse_over() && !self.mouse.dragging(MouseBtn::Left) {
+            if self.hot_id.is_null() || self.is_id_over(id, self.hot_id) {
+                self.hot_id = id;
+            }
         }
+
+        if signal.mouse_over()
+            && self.mouse.pressed(MouseBtn::Left)
+            && !self.mouse.dragging(MouseBtn::Left)
+        {
+            // one should be able to drag the widget when mouse is over a child that is not
+            // clickable. bit hacky... 
+            //
+            assert!(!self.hot_id.is_null());
+            // if current hot is not clickable, allow fall through
+            if w.opt.flags.clickable() && (!self[self.hot_id].opt.flags.clickable()
+                // if active is null or not clickable
+                // if active is null or not clickable and current is over active 
+                || (self.active_id.is_null() || !self[self.active_id].opt.flags.clickable()))
+                && w.opt.flags.clickable()
+                // && self.is_id_over(id, self.active_id)
+            {
+                // log::info!("{id}");
+                // self.hot_id = id;
+                self.active_id = id;
+            }
+        }
+
+        // if signal.mouse_over()
+        //     && !self.mouse.dragging(MouseBtn::Left)
+        //     && (self.hot_id.is_null() || !self[self.hot_id].opt.flags.clickable())
+        //     && self.is_id_over(id, self.hot_id)
+        // {
+        //     self.hot_id = id;
+        // }
 
         // if hot_id from previous frame is id set to hovering
         if signal.mouse_over() && self.hot_id == id {
@@ -1392,84 +1459,87 @@ impl State {
         signal
     }
 
-    pub fn is_hovered(&self, id: WidgetId) -> bool {
+    pub fn is_hot(&self, id: WidgetId) -> bool {
         id == self.hot_id
     }
 
-    pub fn is_selected(&self, id: WidgetId) -> bool {
+    pub fn is_active(&self, id: WidgetId) -> bool {
         id == self.active_id
     }
 
-    pub fn add_button(&mut self, label: &str) -> bool {
-        let id = self.id_from_str(label);
-        // let size = Vec2::new(50.0 * label.len() as f32, 80.0);
+    pub fn add_label(&mut self, label: &str, text_size: f32) -> (WidgetId, Signals) {
+        let mut opt = WidgetOpt::new()
+            .text(label, text_size)
+            .size_text()
+            .padding(8.0);
 
-        let style = FrameStyle {
-            fill: StateStyle {
-                default: RGBA {
-                    r: 0.20,
-                    g: 0.22,
-                    b: 0.25,
-                    a: 1.0,
-                },
-                hovered: RGBA {
-                    r: 0.28,
-                    g: 0.30,
-                    b: 0.34,
-                    a: 1.0,
-                },
-                active: RGBA {
-                    r: 0.12,
-                    g: 0.14,
-                    b: 0.18,
-                    a: 1.0,
-                },
-            },
-            outline: StateStyle {
-                default: RGBA {
-                    r: 0.10,
-                    g: 0.10,
-                    b: 0.10,
-                    a: 1.0,
-                },
-                hovered: RGBA {
-                    r: 0.35,
-                    g: 0.35,
-                    b: 0.40,
-                    a: 1.0,
-                },
-                active: RGBA {
-                    r: 0.50,
-                    g: 0.50,
-                    b: 0.55,
-                    a: 1.0,
-                },
-            },
-        };
+        let (id, signal) = self.begin_widget(label, opt);
 
-        let (fill, outline) = if self.is_selected(id) && self.mouse.pressed(MouseBtn::Left) {
-            (style.fill.active, style.outline.active)
-        } else if self.is_hovered(id) {
-            (style.fill.hovered, style.outline.hovered)
+        self.end_widget();
+        (id, signal)
+    }
+
+    pub fn add_button_impl(&mut self, label: &str) -> (WidgetId, Signals) {
+        // TODO[BUG]: pressing button and then pressing a non clickable surface still striggers the
+        // button click
+
+        // TODO[BUG]: when performing a double press with the first press being on the button, and
+        // second outside we still set button to active
+
+        let id = self.next_id(label);
+
+        let btn_default_fill = RGBA::hex("#0F1113");
+        let btn_default_outline = RGBA::hex("#232629");
+        let text_default = RGBA::hex("#7e7e7e");
+
+        let btn_hover_fill = RGBA::hex("#141618");
+        let btn_hover_outline = RGBA::hex("#4f565d");
+        let text_hover = RGBA::hex("#f9f9f9");
+
+        // let btn_active_fill = RGBA::hex("#0B0C0D");
+        let btn_active_fill = RGBA::hex("#e65858");
+        let btn_active_outline = RGBA::hex("#18191A");
+        let text_active = text_default;
+
+        let (fill, outline, text) = if self.is_active(id) && self.mouse.pressed(MouseBtn::Left) {
+            (btn_active_fill, btn_hover_outline, text_hover)
+        } else if self.is_hot(id) {
+            (btn_hover_fill, btn_hover_outline, text_hover)
         } else {
-            (style.fill.default, style.outline.default)
+            (btn_default_fill, btn_default_outline, text_default)
         };
 
         let mut opt = WidgetOpt::new()
-            // .size_px(size.x, size.y)
-            .text(label, 20.0)
+            .text(label, 32.0)
+            .text_color(text)
+            .size_text()
+            .padding(8.0)
             .fill(fill)
             .clickable()
             .corner_radius(10.0)
             .outline(outline, 5.0);
 
-        let size = self.draw.measure_text_size(opt.text_meta());
-        opt = opt.size_px(size.x, size.y);
-
-        let (_, signal) = self.begin_widget(label, opt);
+        let (id, signal) = self.begin_widget(label, opt);
 
         self.end_widget();
-        signal.released()
+        (id, signal)
+    }
+
+    pub fn add_button(&mut self, label: &str) -> bool {
+        self.add_button_impl(label).1.released()
+    }
+
+    pub fn offset_cursor_y(&mut self, y: f32) {
+        self.cursor.y += y;
+    }
+
+    pub fn offset_cursor_x(&mut self, x: f32) {
+        self.cursor.x += x;
+    }
+
+    pub fn offset_cursor(&mut self, x: f32, y: f32) {
+        self.offset_cursor_x(x);
+        self.offset_cursor_y(y);
     }
 
     pub fn parent_id(&self) -> WidgetId {
@@ -1495,19 +1565,19 @@ impl State {
     pub fn add_widget(&mut self, label: &str, opt: WidgetOpt) -> WidgetId {
         let id = self.id_from_str(label);
         let parent_id = self.parent_id();
-        self.id_stack.push(id);
+        let padding = opt.padding;
 
-        let opt_size = opt.size;
-        let opt_padding = opt.padding;
-
+        // if parent is none we have a new root
         if parent_id.is_null() {
             self.roots.push(id);
         }
 
+        // TODO[CHECK]
         if let Some(pos) = opt.pos {
             self.cursor = pos;
         }
 
+        // offset by widgets margin before placing it
         self.cursor.x += opt.margin.left;
         self.cursor.y += opt.margin.top;
 
@@ -1519,107 +1589,180 @@ impl State {
             }
         }
 
-        let mut widget_size: Vec2 = if let Some(w) = w {
+        // remeasure text_size because it could have changed
+        let text_size = self.draw.measure_text_size(opt.text_meta());
+
+        let widget_size: Vec2 = if let Some(w) = w {
+            // use previous size if available
             w.rect.size()
         } else {
-            opt.size.min_px_bound() + opt.padding.axis_sum()
+            // init size with fixed size if available + padding
+            let x = match opt.size[Axis::X] {
+                SizeTyp::Px(x) => x,
+                SizeTyp::Fit => 0.0,
+                SizeTyp::Text => text_size.x,
+            } + opt.padding.sum_along_axis(Axis::X);
+
+            let y = match opt.size[Axis::Y] {
+                SizeTyp::Px(y) => y,
+                SizeTyp::Fit => 0.0,
+                SizeTyp::Text => text_size.y,
+            } + opt.padding.sum_along_axis(Axis::Y);
+            Vec2::new(x, y)
         };
 
+        // update existing or init
         if let Some(w) = self.widgets.get_mut(&id) {
             w.rect = Rect::from_min_size(self.cursor, widget_size);
             w.opt = opt;
-            w.last_frame_used = self.frame_count;
+            w.text_size = text_size;
         } else {
             let mut w = Widget::new(id, opt);
             w.rect = Rect::from_min_size(self.cursor, widget_size);
-            w.last_frame_used = self.frame_count;
+            w.text_size = text_size;
+            w.frame_created = self.frame_count;
             self.widgets.insert(id, w);
             self.draw_order.push(id);
         }
 
         let mut prev_sibling = WidgetId::NULL;
         if let Some(p) = self.parent_widget_mut() {
-            let last = p.last_child;
-            p.last_child = id;
+            let last = p.last;
+            p.last = id;
             if p.n_children == 0 {
-                p.first_child = id;
+                p.first = id;
             }
             p.n_children += 1;
             prev_sibling = last;
         }
 
         let w = self.widgets.get_mut(&id).unwrap();
+        w.last_frame_used = self.frame_count;
 
+        // clear non persistant data, e.g. children
         w.reset_frame_data();
-
-        w.comp_min_size = opt_size.min_px_bound();
-        w.comp_max_size = opt_size.max_px_bound();
-        w.rect = Rect::from_min_size(
-            self.cursor,
-            w.rect
-                .size()
-                .min(w.total_max_size())
-                .max(w.total_min_size()),
-        );
-
         w.parent = parent_id;
-        w.prev_sibling = prev_sibling;
+        w.prev = prev_sibling;
+        w.text_size = text_size;
 
         if !prev_sibling.is_null() {
             let sib = self.widgets.get_mut(&prev_sibling).unwrap();
-            sib.next_sibling = id;
+            sib.next = id;
         }
 
+        // offset cursor by padding
+        // for children
+        self.cursor.x += padding.left;
+        self.cursor.y += padding.top;
+
+        self.id_stack.push(id);
         self.widget_stack.push(id);
-        self.cursor.x += opt_padding.left;
-        self.cursor.y += opt_padding.top;
 
         id
     }
 
     pub fn end_widget(&mut self) {
+        // pop from stack
         self.id_stack.pop();
-        let id = self.widget_stack.pop().unwrap();
+        let id = self
+            .widget_stack
+            .pop()
+            .expect("called end_widget on empty widget stack");
         let w = self.widgets.get(&id).unwrap();
 
-        // let w_opt = w.opt;
-        let w_rect = w.rect;
-        let opt_size = w.opt.size;
-        let opt_margin = w.opt.margin;
+        let rect = w.rect;
+        let margin = w.opt.margin;
+        let padding = w.opt.padding;
         let p_id = w.parent;
 
-        // let mut size = Vec2::ZERO;
-        let mut fit_size = Vec2::ZERO;
-
-        if w.opt.size.min[Axis::X].is_fit() || opt_size.max[Axis::X].is_fit() {
-            fit_size.x = self.sum_children_sizes_along_axis(w, Axis::X);
-        }
-        if w.opt.size.min[Axis::Y].is_fit() || opt_size.max[Axis::Y].is_fit() {
-            fit_size.y = self.sum_children_sizes_along_axis(w, Axis::Y);
-        }
-
+        let fit_size = self.measure_children(w);
+        let text_size = w.text_size;
         let w = self.widgets.get_mut(&id).unwrap();
+        w.fit_size = fit_size;
 
-        w.rect_width_w_fit_size(fit_size.x);
-        w.rect_height_w_fit_size(fit_size.y);
+        // set fit size directly if not resizable
+        // or if widget was created this frame
+        // TODO[NOTE]: maybe allow for resizable widgets to be resized when children are resized,
+        // resizable widgets get resized only at creation and when out of bounds
+        if (!w.opt.flags.resizable_x() || w.frame_created == self.frame_count)
+        // && w.opt.size.x().is_fit()
+        {
+            if w.opt.size.x().is_fit() {
+                w.rect
+                    .set_width(fit_size.x + padding.sum_along_axis(Axis::X))
+            }
+            if w.opt.size.x().is_text() {
+                w.rect
+                    .set_width(text_size.x + padding.sum_along_axis(Axis::X))
+            }
+        }
+        if (!w.opt.flags.resizable_y() || w.frame_created == self.frame_count)
+        // && w.opt.size.y().is_fit()
+        {
+            if w.opt.size.y().is_fit() {
+                w.rect
+                    .set_height(fit_size.y + padding.sum_along_axis(Axis::Y))
+            }
+            if w.opt.size.y().is_text() {
+                w.rect
+                    .set_height(text_size.y + padding.sum_along_axis(Axis::Y))
+            }
+        }
 
+        // if resizable clamp to updated min size
+        let min_size = w.compute_min_size();
+        let max_size = w.compute_max_size();
+
+        let curr_size = w.rect.size();
+        if w.opt.flags.resizable_x() {
+            w.rect
+                .set_width(curr_size.x.max(min_size.x).min(max_size.x));
+        }
+        if w.opt.flags.resizable_y() {
+            w.rect
+                .set_height(curr_size.y.max(min_size.y).min(max_size.y));
+        }
+
+        // offset cursor to end of widget
         self.cursor = w.rect.min;
         if let Some(p) = self.widgets.get(&p_id) {
             match p.opt.layout {
-                Layout::Vertical => {
-                    self.cursor.y = w_rect.max.y + opt_margin.bottom + p.opt.spacing
-                    // self.cursor.y += w_rect.height();
-                    // self.cursor.y += w_opt.margin.bottom;
-                    // self.cursor.y += p.opt.spacing;
-                }
-                Layout::Horizontal => {
-                    self.cursor.x = w_rect.max.x + opt_margin.right + p.opt.spacing
-                    // self.cursor.x += w_rect.width();
-                    // self.cursor.x += w_opt.margin.right;
-                    // self.cursor.x += p.opt.spacing;
-                }
+                Layout::Vertical => self.cursor.y = rect.max.y + margin.bottom + p.opt.spacing,
+                Layout::Horizontal => self.cursor.x = rect.max.x + margin.right + p.opt.spacing,
             }
         }
+    }
+
+    fn measure_children(&self, w: &Widget) -> Vec2 {
+        // TODO[NOTE]: maybe just use bounds?
+        let mut total_size = Vec2::ZERO;
+        let mut max_size = Vec2::ZERO;
+        let mut margins = Vec2::ZERO;
+        let n_children = w.n_children;
+
+        for c in self.iter_children(w.id) {
+            let size = c.rect.size();
+            for axis in [Axis::X, Axis::Y] {
+                let a = axis as usize;
+                total_size[a] += size[a];
+                max_size[a] = max_size[a].max(size[a]);
+                margins[a] += c.opt.margin.sum_along_axis(axis);
+            }
+        }
+
+        let mut result = Vec2::ZERO;
+        for axis in [Axis::X, Axis::Y] {
+            let content_size = if w.opt.layout.axis() == axis {
+                total_size[axis as usize] + (n_children.max(1) - 1) as f32 * w.opt.spacing
+            } else {
+                max_size[axis as usize]
+            };
+
+            result[axis as usize] =
+                content_size + margins[axis as usize] + w.opt.padding.sum_along_axis(axis) * 2.0;
+        }
+
+        result
     }
 
     fn sum_children_sizes_along_axis(&self, w: &Widget, axis: Axis) -> f32 {
@@ -1651,6 +1794,13 @@ impl State {
         if self.draw_dbg_wireframe {
             self.draw.debug_wireframe(2.0);
         }
+    }
+
+    pub fn mouse_draggin_outside(&self, m: MouseBtn) -> bool {
+        let size = self.draw.screen_size;
+        let pos = self.mouse.pos;
+
+        pos.x < 0.0 || pos.x > size.x || pos.y < 0.0 || pos.y > size.y
     }
 }
 
@@ -1831,7 +1981,6 @@ impl FontAtlas {
         let size = Vec2::new(w as f32, h as f32);
         let uv_min =
             Vec2::new(alloc_rect.min.x as f32, alloc_rect.min.y as f32) / font_tex.size as f32;
-        // TODO: check
         let uv_max = uv_min + size / font_tex.size as f32;
 
         let meta = GlyphMeta {
@@ -1929,6 +2078,23 @@ pub struct Vertex {
 }
 
 impl Vertex {
+    pub const ZERO: Self = Self {
+        pos: Vec2::ZERO,
+        uv: Vec2::ZERO,
+        tex: 0,
+        _pad: 0,
+        col: RGBA::ZERO,
+    };
+
+    pub fn new(pos: Vec2, col: RGBA, uv: Vec2, tex: u32) -> Self {
+        Self {
+            pos,
+            uv,
+            tex,
+            _pad: 0,
+            col,
+        }
+    }
     pub fn color(pos: Vec2, col: RGBA) -> Self {
         Self {
             pos,
@@ -1939,12 +2105,12 @@ impl Vertex {
         }
     }
 
-    pub fn uv(pos: Vec2, uv: Vec2, tex: u32) -> Self {
+    pub fn uv(pos: Vec2, uv: Vec2, tex: u32, col: RGBA) -> Self {
         Self {
             pos,
             uv,
             tex,
-            col: RGBA::ZERO,
+            col,
             _pad: 0,
         }
     }
@@ -2079,87 +2245,188 @@ fn build_bind_group(
     })
 }
 
-fn vec2_to_point(v: Vec2) -> lyon::geom::Point<f32> {
-    lyon::geom::Point::new(v.x, v.y)
-}
-
-fn path_from_points(points: &[Vec2], closed: bool) -> lyon::path::Path {
-    let mut builder = lyon::path::Path::builder();
-    if points.is_empty() {
-        return builder.build();
-    }
-    builder.begin(vec2_to_point(points[0]));
-    for &p in &points[1..] {
-        builder.line_to(vec2_to_point(p));
-    }
-    builder.end(closed);
-    builder.build()
-}
-
-fn tessellate_uv_rect(rect: Rect, uv_min: Vec2, uv_max: Vec2, tex: u32) -> ([Vertex; 4], [u32; 6]) {
-    let tl = Vertex::uv(rect.min, uv_min, tex);
-    let tr = Vertex::uv(rect.min.with_x(rect.max.x), uv_min.with_x(uv_max.x), tex);
-    let bl = Vertex::uv(rect.min.with_y(rect.max.y), uv_min.with_y(uv_max.y), tex);
-    let br = Vertex::uv(rect.max, uv_max, tex);
+fn tessellate_uv_rect(
+    rect: Rect,
+    uv_min: Vec2,
+    uv_max: Vec2,
+    tex: u32,
+    tint: RGBA,
+) -> ([Vertex; 4], [u32; 6]) {
+    let tl = Vertex::uv(rect.min, uv_min, tex, tint);
+    let tr = Vertex::uv(
+        rect.min.with_x(rect.max.x),
+        uv_min.with_x(uv_max.x),
+        tex,
+        tint,
+    );
+    let bl = Vertex::uv(
+        rect.min.with_y(rect.max.y),
+        uv_min.with_y(uv_max.y),
+        tex,
+        tint,
+    );
+    let br = Vertex::uv(rect.max, uv_max, tex, tint);
 
     ([bl, br, tr, tl], [0, 1, 3, 1, 2, 3])
 }
 
-fn tessellate_line(
+pub fn tessellate_line(
     points: &[Vec2],
     col: RGBA,
     thickness: f32,
-    is_closed: bool,
+    closed: bool,
 ) -> (Vec<Vertex>, Vec<u32>) {
-    use lyon::tessellation::{
-        BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
+    if points.len() < 2 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let count = if closed {
+        points.len()
+    } else {
+        points.len() - 1
     };
-    if points.is_empty() {
-        return (Vec::new(), Vec::new());
+    let half = thickness * 0.5;
+
+    let mut verts: Vec<Vertex> = Vec::with_capacity(count * 4);
+    let mut idxs: Vec<u32> = Vec::with_capacity(count * 6);
+
+    let mut base_idx: u32 = 0;
+    for i in 0..count {
+        let i2 = if (i + 1) == points.len() { 0 } else { i + 1 };
+        let p1 = points[i];
+        let p2 = points[i2];
+
+        let mut dx = p2.x - p1.x;
+        let mut dy = p2.y - p1.y;
+        let len2 = dx * dx + dy * dy;
+        if len2 <= std::f32::EPSILON {
+            // degenerate segment -> make a vertical fallback
+            dx = 0.0;
+            dy = 1.0;
+        } else {
+            let inv_len = 1.0 / len2.sqrt();
+            dx *= inv_len;
+            dy *= inv_len;
+        }
+
+        // perpendicular (normalized) scaled by half thickness
+        let px = dy * half;
+        let py = -dx * half;
+
+        // produce 4 verts for the quad (not sharing edges, same layout as original path 4)
+        verts.push(Vertex::color(Vec2::new(p1.x + px, p1.y + py), col));
+        verts.push(Vertex::color(Vec2::new(p2.x + px, p2.y + py), col));
+        verts.push(Vertex::color(Vec2::new(p2.x - px, p2.y - py), col));
+        verts.push(Vertex::color(Vec2::new(p1.x - px, p1.y - py), col));
+
+        // two triangles (0,1,2) and (0,2,3) relative to base_idx
+        idxs.push(base_idx + 0);
+        idxs.push(base_idx + 1);
+        idxs.push(base_idx + 2);
+        idxs.push(base_idx + 0);
+        idxs.push(base_idx + 2);
+        idxs.push(base_idx + 3);
+
+        base_idx += 4;
     }
 
-    let path = path_from_points(points, is_closed);
-
-    let mut buffers = VertexBuffers::<Vertex, u32>::new();
-    let mut tess = StrokeTessellator::new();
-    let options = StrokeOptions::default()
-        .with_line_width(thickness)
-        .with_line_join(lyon::path::LineJoin::Round);
-
-    let mut builder = BuffersBuilder::new(&mut buffers, |v: StrokeVertex| {
-        Vertex::color(Vec2::new(v.position().x, v.position().y), col)
-    });
-
-    if let Err(e) = tess.tessellate_path(path.as_slice(), &options, &mut builder) {
-        log::error!("Stroke tessellation failed: {:?}", e);
-        return (Vec::new(), Vec::new());
-    }
-
-    (buffers.vertices, buffers.indices)
+    (verts, idxs)
 }
 
-fn tessellate_fill(points: &[Vec2], fill: RGBA) -> (Vec<Vertex>, Vec<u32>) {
-    use lyon::tessellation::{
-        BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers,
-    };
-    if points.is_empty() {
+pub fn tessellate_fill(points: &[Vec2], col: RGBA) -> (Vec<Vertex>, Vec<u32>) {
+    if points.len() < 3 {
         return (Vec::new(), Vec::new());
     }
 
-    let path = path_from_points(points, true);
+    const AA_SIZE: f32 = 1.0;
+    const EPS: f32 = 1e-12;
+    let col_trans = RGBA::rgba(255, 255, 255, 0);
+    let n = points.len();
 
-    let mut buffers = VertexBuffers::<Vertex, u32>::new();
-    let mut tess = FillTessellator::new();
-    let mut builder = BuffersBuilder::new(&mut buffers, |v: FillVertex| {
-        Vertex::color(Vec2::new(v.position().x, v.position().y), fill)
-    });
-
-    if let Err(e) = tess.tessellate_path(&path, &FillOptions::default(), &mut builder) {
-        log::error!("Fill tessellation failed: {:?}", e);
-        return (Vec::new(), Vec::new());
+    // compute edge normals
+    let mut temp_normals = vec![Vec2 { x: 0.0, y: 0.0 }; n];
+    for i1 in 0..n {
+        let i0 = (i1 + n - 1) % n;
+        let p0 = &points[i0];
+        let p1 = &points[i1];
+        let mut dx = p1.x - p0.x;
+        let mut dy = p1.y - p0.y;
+        let d2 = dx * dx + dy * dy;
+        if d2 > EPS {
+            let inv_len = 1.0_f32 / d2.sqrt();
+            dx *= inv_len;
+            dy *= inv_len;
+        } else {
+            dx = 0.0;
+            dy = 0.0;
+        }
+        temp_normals[i0] = Vec2 { x: dy, y: -dx };
     }
 
-    (buffers.vertices, buffers.indices)
+    let mut verts = Vec::with_capacity(n * 2);
+    let mut idxs = Vec::with_capacity((n - 2) * 3 + n * 6);
+
+    for i1 in 0..n {
+        let i0 = (i1 + n - 1) % n;
+        let n0 = &temp_normals[i0];
+        let n1 = &temp_normals[i1];
+
+        let mut dm_x = (n0.x + n1.x) * 0.5;
+        let mut dm_y = (n0.y + n1.y) * 0.5;
+        let d2 = dm_x * dm_x + dm_y * dm_y;
+        if d2 <= EPS {
+            dm_x = 1.0;
+            dm_y = 0.0;
+        } else {
+            let inv_len = 1.0_f32 / d2.sqrt();
+            dm_x *= inv_len;
+            dm_y *= inv_len;
+        }
+        dm_x *= AA_SIZE * 0.5;
+        dm_y *= AA_SIZE * 0.5;
+
+        let p = &points[i1];
+        let inner = Vec2 {
+            x: p.x - dm_x,
+            y: p.y - dm_y,
+        };
+        let outer = Vec2 {
+            x: p.x + dm_x,
+            y: p.y + dm_y,
+        };
+
+        verts.push(Vertex::color(inner, col));
+        verts.push(Vertex::color(outer, col_trans));
+    }
+
+    let base: u32 = 0;
+
+    for i in 2..n {
+        let a = base;
+        let b = base + ((i - 1) as u32) * 2;
+        let c = base + (i as u32) * 2;
+        idxs.push(a);
+        idxs.push(b);
+        idxs.push(c);
+    }
+
+    for i1 in 0..n {
+        let i0 = (i1 + n - 1) % n;
+        let inner_i1 = base + (i1 as u32) * 2;
+        let inner_i0 = base + (i0 as u32) * 2;
+        let outer_i0 = inner_i0 + 1;
+        let outer_i1 = inner_i1 + 1;
+
+        idxs.push(inner_i1);
+        idxs.push(inner_i0);
+        idxs.push(outer_i0);
+
+        idxs.push(outer_i0);
+        idxs.push(outer_i1);
+        idxs.push(inner_i1);
+    }
+
+    (verts, idxs)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2238,8 +2505,12 @@ impl DrawRect {
 }
 
 pub struct DrawList {
-    pub vtx_buffer: Vec<Vertex>,
-    pub idx_buffer: Vec<u32>,
+    pub gpu_vertices: wgpu::Buffer,
+    pub gpu_indices: wgpu::Buffer,
+
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub vtx_idx_buffer: DrawChunks,
     pub screen_size: Vec2,
 
     pub path: Vec<Vec2>,
@@ -2265,19 +2536,44 @@ pub struct DrawList {
 // }
 
 impl DrawList {
+    /// 2^16
+    pub const MAX_VERTEX_COUNT: u64 = 65_536;
+    // 2^17
+    pub const MAX_INDEX_COUNT: u64 = 131_072;
+
     pub fn new(wgpu: WGPUHandle) -> Self {
         let mut font_db = ctext::fontdb::Database::new();
         // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
-        // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
+        // font_db.load_font_data(include_bytes!("CommitMono-500-Regular.otf").to_vec());
         font_db.load_font_data(include_bytes!("Roboto.ttf").to_vec());
 
+        let gpu_vertices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("draw_list_vertex_buffer"),
+            size: std::mem::size_of::<Vertex>() as u64 * Self::MAX_VERTEX_COUNT,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+
+        let gpu_indices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("draw_list_vertex_buffer"),
+            size: std::mem::size_of::<u32>() as u64 * Self::MAX_INDEX_COUNT,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+            mapped_at_creation: false,
+        });
+
         Self {
-            vtx_buffer: Vec::new(),
-            idx_buffer: Vec::new(),
+            vertices: Vec::new(),
+            gpu_vertices,
+            gpu_indices,
+            indices: Vec::new(),
             screen_size: Vec2::ONE,
             path: Vec::new(),
             path_closed: false,
             resolution: 8.0,
+            vtx_idx_buffer: DrawChunks::new(
+                Self::MAX_VERTEX_COUNT as usize,
+                Self::MAX_INDEX_COUNT as usize,
+            ),
 
             // font: ctext::FontSystem::new(),
             font: ctext::FontSystem::new_with_locale_and_db("en_US".to_owned(), font_db),
@@ -2291,43 +2587,34 @@ impl DrawList {
     }
 
     pub fn clear(&mut self) {
-        self.vtx_buffer.clear();
-        self.idx_buffer.clear();
+        self.vertices.clear();
+        self.indices.clear();
         self.path_clear();
+        self.vtx_idx_buffer.clear();
 
         std::mem::swap(&mut self.text_cache, &mut self.text_cache_2);
         self.text_cache_2 = TextCache::new();
     }
 
-    pub fn extend(
-        &mut self,
-        v: impl IntoIterator<Item = Vertex>,
-        i: impl IntoIterator<Item = u32>,
-    ) {
-        let off = self.vtx_buffer.len() as u32;
-        self.vtx_buffer.extend(v);
-        self.idx_buffer.extend(i.into_iter().map(|i| i + off))
+    pub fn draw_uv_rect(&mut self, rect: Rect, uv_min: Vec2, uv_max: Vec2, tint: RGBA) {
+        let (verts, indxs) = tessellate_uv_rect(rect, uv_min, uv_max, 1, tint);
+        self.vtx_idx_buffer.push(&verts, &indxs)
     }
 
-    pub fn draw_uv_rect(&mut self, rect: Rect, uv_min: Vec2, uv_max: Vec2) {
-        let (verts, indxs) = tessellate_uv_rect(rect, uv_min, uv_max, 1);
-        self.extend(verts, indxs)
-    }
+    // pub fn draw_text_layout(&mut self, layout: &TextGlyphLayout, pos: Vec2, tint: RGBA) {
+    //     for glyph in &layout.glyphs {
+    //         let rect = Rect::from_min_size(glyph.pos + pos, glyph.size);
 
-    pub fn draw_text_layout(&mut self, layout: &TextGlyphLayout, pos: Vec2) {
-        for glyph in &layout.glyphs {
-            let rect = Rect::from_min_size(glyph.pos + pos, glyph.size);
-
-            self.draw_uv_rect(rect, glyph.uv_min, glyph.uv_max);
-        }
-    }
+    //         self.draw_uv_rect(rect, glyph.uv_min, glyph.uv_max, tint);
+    //     }
+    // }
 
     pub fn register_text(&mut self, text: TextMeta) -> &TextGlyphLayout {
         let text_str = text.string.clone();
         let text_width = text.width();
         let text_height = text.height();
         let font_size = text.font_size();
-        // TODO: check
+        // TODO[CHECK]: scaled vs non scaled
         let line_height = text.scaled_line_height();
 
         if let Some(layout) = self.text_cache.remove(&text) {
@@ -2352,7 +2639,9 @@ impl DrawList {
         buffer.set_text(
             &mut self.font,
             &text_str,
-            &ctext::Attrs::new().family(ctext::Family::SansSerif).weight(ctext::Weight(800)),
+            &ctext::Attrs::new()
+                .family(ctext::Family::SansSerif)
+                .weight(ctext::Weight(800)),
             ctext::Shaping::Advanced,
         );
         buffer.set_size(&mut self.font, text_width, text_height);
@@ -2369,8 +2658,9 @@ impl DrawList {
 
             for run_glyph in run.glyphs {
                 let mut phys = run_glyph.physical((0.0, 0.0), 1.0);
-                phys.cache_key.x_bin = ctext::SubpixelBin::Zero;
-                phys.cache_key.y_bin = ctext::SubpixelBin::Zero;
+                // TODO[CHECK]: what does this do
+                phys.cache_key.x_bin = ctext::SubpixelBin::Three;
+                phys.cache_key.y_bin = ctext::SubpixelBin::Three;
 
                 if let Some(glyph) = self.font_atlas.get_glyph(
                     phys.cache_key,
@@ -2378,7 +2668,7 @@ impl DrawList {
                     &mut self.text_swash_cache,
                     &self.wgpu,
                 ) {
-                    // TODO DPI
+                    // TODO[NOTE]: add DPI
                     let pos = Vec2::new(phys.x as f32, phys.y as f32 + run.line_y) + glyph.meta.pos;
                     let size = glyph.meta.size;
                     let uv_min = glyph.meta.uv_min;
@@ -2399,8 +2689,8 @@ impl DrawList {
         }
 
         // margin of error
-        width += 0.1;
-        height += 0.1;
+        // width += 0.1;
+        // height += 0.1;
         log::trace!("register text: {text_str}");
         let layout = TextGlyphLayout {
             glyphs,
@@ -2411,100 +2701,20 @@ impl DrawList {
         self.text_cache_2.get(&text).unwrap()
     }
 
-    pub fn draw_text(&mut self, text: TextMeta, pos: Vec2) {
+    pub fn draw_text(&mut self, text: TextMeta, pos: Vec2, color: RGBA) {
         let layout = self.register_text(text).clone();
 
         for glyph in &layout.glyphs {
             let rect = Rect::from_min_size(glyph.pos + pos, glyph.size);
 
-            self.draw_uv_rect(rect, glyph.uv_min, glyph.uv_max);
+            self.draw_uv_rect(rect, glyph.uv_min, glyph.uv_max, color);
         }
     }
 
-    // pub fn draw_text2(&mut self, text: TextMeta, pos: Vec2) {
-    //     let text_str = text.string.clone();
-    //     let text_width = text.width();
-    //     let text_height = text.height();
-    //     let font_size = text.font_size();
-    //     // TODO: check
-    //     let line_height = text.line_height();
-
-    //     // TODO: dpi scale
-    //     if let Some(layout) = self.text_cache.remove(&text) {
-    //         // self.render_text()
-    //         // log::info!("{text_str}: {:#?}", layout.glyphs);
-    //         self.draw_text_layout(&layout, pos);
-    //         self.text_cache_2.insert(text, layout);
-    //         return;
-    //     } else if let Some(layout) = self.text_cache_2.get(&text) {
-    //         let layout = layout.clone();
-    //         self.draw_text_layout(&layout, pos);
-    //         return;
-    //     }
-
-    //     let mut buffer = ctext::Buffer::new(
-    //         &mut self.font,
-    //         ctext::Metrics {
-    //             font_size,
-    //             line_height,
-    //         },
-    //     );
-    //     buffer.set_text(
-    //         &mut self.font,
-    //         &text_str,
-    //         &ctext::Attrs::new().family(ctext::Family::SansSerif),
-    //         ctext::Shaping::Advanced,
-    //     );
-    //     buffer.set_size(&mut self.font, text_width, text_height);
-    //     buffer.shape_until_scroll(&mut self.font, false);
-
-    //     let mut glyphs = Vec::new();
-
-    //     let mut width = 0.0;
-    //     let mut height = 0.0;
-
-    //     for run in buffer.layout_runs() {
-
-    //         width = run.line_w.max(width);
-    //         height = run.line_height.max(height);
-
-    //         for run_glyph in run.glyphs {
-    //             let mut phys = run_glyph.physical((0.0, 0.0), 1.0);
-    //             phys.cache_key.x_bin = ctext::SubpixelBin::Zero;
-    //             phys.cache_key.y_bin = ctext::SubpixelBin::Zero;
-
-    //             if let Some(glyph) = self.font_atlas.get_glyph(
-    //                 phys.cache_key,
-    //                 &mut self.font,
-    //                 &mut self.text_swash_cache,
-    //                 &self.wgpu,
-    //             ) {
-    //                 // TODO DPI
-    //                 let pos = Vec2::new(phys.x as f32, phys.y as f32 + run.line_y) + glyph.meta.pos;
-    //                 let size = glyph.meta.size;
-    //                 let uv_min = glyph.meta.uv_min;
-    //                 let uv_max = glyph.meta.uv_max;
-    //                 let has_color = glyph.meta.has_color;
-    //                 let texture = glyph.texture.clone();
-
-    //                 glyphs.push(ShapedGlyph {
-    //                     texture,
-    //                     pos,
-    //                     size,
-    //                     uv_min,
-    //                     uv_max,
-    //                     has_color,
-    //                 });
-    //             }
-    //         }
-    //     }
-
-    //     let layout = TextGlyphLayout { glyphs, width, height };
-    //     self.draw_text_layout(&layout, pos);
-    //     self.text_cache_2.insert(text, layout);
-    // }
-
     pub fn measure_text_size(&mut self, text: TextMeta) -> Vec2 {
+        if text.string.is_empty() {
+            return Vec2::ZERO;
+        }
         let layout = self.register_text(text);
         Vec2::new(layout.width, layout.height)
     }
@@ -2512,23 +2722,28 @@ impl DrawList {
     pub fn draw_widget(&mut self, rect: Rect, opt: &WidgetOpt) {
         self.path_rect(rect.min, rect.max, opt.corner_radius);
 
-
         if opt.flags.contains(WidgetFlags::DRAW_FILL) {
-            let (vtx, idx) = tessellate_fill(&self.path, opt.fill);
-            self.extend(vtx, idx);
+            let (vtx, idx) = tessellate_fill(&self.path, opt.fill_color);
+            self.vtx_idx_buffer.push(&vtx, &idx);
+        }
+
+        if opt.tex_id != 0 {
+            self.draw_uv_rect(rect, Vec2::ZERO, Vec2::splat(1.0), RGBA::WHITE);
         }
 
         if opt.flags.contains(WidgetFlags::DRAW_TEXT) {
             // self.draw_uv_rect(rect, Vec2::ZERO, Vec2::splat(1.0));
             // let text = TextMeta::new(opt.text.clone().unwrap_or("".into()), opt.font_size, 0.0);
-            self.draw_text(opt.text_meta(), rect.min)
+            let pad = Vec2::new(opt.padding.left, opt.padding.top);
+            self.draw_text(opt.text_meta(), rect.min + pad, opt.text_color)
         }
 
         if opt.flags.contains(WidgetFlags::DRAW_OUTLINE) {
             self.path_clear();
             self.path_rect(rect.min, rect.max, opt.corner_radius);
-            let (vtx, idx) = tessellate_line(&self.path, opt.outline_col, opt.outline_width, true);
-            self.extend(vtx, idx);
+            let (vtx, idx) =
+                tessellate_line(&self.path, opt.outline_color, opt.outline_width, true);
+            self.vtx_idx_buffer.push(&vtx, &idx);
         }
 
         self.path_clear();
@@ -2539,18 +2754,23 @@ impl DrawList {
 
         if let Some(fill) = dr.fill {
             let (vtx, idx) = tessellate_fill(&self.path, fill);
-            let off = self.vtx_buffer.len() as u32;
-            self.vtx_buffer.extend(vtx);
-            self.idx_buffer.extend(idx.into_iter().map(|i| i + off));
+            self.vtx_idx_buffer.push(&vtx, &idx)
+            // self.draw_memory.push(&vtx, &idx);
+            // let off = self.vertices.len() as u32;
+
+            // self.vertices.extend(&vtx);
+            // self.indices.extend(&idx.into_iter().map(|i| i + off));
         }
 
         if let Some((col, width)) = dr.outline {
             self.path_clear();
             self.path_rect(dr.rect.min, dr.rect.max, dr.corner_radius);
             let (vtx, idx) = tessellate_line(&self.path, col, width, true);
-            let off = self.vtx_buffer.len() as u32;
-            self.vtx_buffer.extend(vtx);
-            self.idx_buffer.extend(idx.into_iter().map(|i| i + off));
+            // self.draw_memory.push(&vtx, &idx);
+            self.vtx_idx_buffer.push(&vtx, &idx)
+            // let off = self.vertices.len() as u32;
+            // self.vertices.extend(&vtx);
+            // self.indices.extend(&idx.into_iter().map(|i| i + off));
         }
 
         self.path_clear();
@@ -2721,69 +2941,76 @@ impl DrawList {
         if cols.is_empty() {
             return;
         }
-        let (vtx, idx) = tessellate_line(&self.path, cols[0], thickness, self.path_closed);
-        let offset = self.vtx_buffer.len() as u32;
-        self.vtx_buffer
-            .extend(vtx.into_iter().enumerate().map(|(i, mut v)| {
-                v.col = cols[i % cols.len()];
-                v
-            }));
-        self.idx_buffer.extend(idx.into_iter().map(|i| i + offset));
+        let (mut vtx, idx) = tessellate_line(&self.path, cols[0], thickness, self.path_closed);
+        // let offset = self.vertices.len() as u32;
+
+        vtx.iter_mut().enumerate().for_each(|(i, v)| {
+            v.col = cols[i % cols.len()];
+        });
+
+        self.vtx_idx_buffer.push(&vtx, &idx);
+        // self.draw_memory.push(&vtx, &idx);
+
+        // self.vertices
+        //     .extend(vtx.into_iter().enumerate().map(|(i, mut v)| {
+        //         v.col = cols[i % cols.len()];
+        //         v
+        //     }));
+        // self.indices.extend(idx.into_iter().map(|i| i + offset));
+
         self.path_clear();
     }
 
     pub fn build_path_stroke(&mut self, thickness: f32, col: RGBA) {
-        let (vtx, idx) = tessellate_line(&self.path, col, thickness, self.path_closed);
-        let offset = self.vtx_buffer.len() as u32;
-        self.vtx_buffer.extend(vtx.into_iter().map(|mut v| {
+        let (mut vtx, idx) = tessellate_line(&self.path, col, thickness, self.path_closed);
+        let offset = self.vertices.len() as u32;
+        vtx.iter_mut().for_each(|v| {
             v.col = col;
-            v
-        }));
-        self.idx_buffer.extend(idx.into_iter().map(|i| i + offset));
+        });
+        self.vtx_idx_buffer.push(&vtx, &idx);
+        // self.draw_memory.push(&vtx, &idx);
+        // self.vertices.extend(vtx.into_iter().map(|mut v| {
+        //     v.col = col;
+        //     v
+        // }));
+        // self.indices.extend(idx.into_iter().map(|i| i + offset));
         self.path_clear();
     }
 
     pub fn debug_wireframe(&mut self, thickness: f32) {
         self.path_clear();
 
-        let mut vtx_buffer = Vec::new();
-        std::mem::swap(&mut vtx_buffer, &mut self.vtx_buffer);
-        let mut idx_buffer = Vec::new();
-        std::mem::swap(&mut idx_buffer, &mut self.idx_buffer);
+        let memory = self.vtx_idx_buffer.clone();
+        self.vtx_idx_buffer.clear();
 
-        for idxs in idx_buffer.chunks_exact(3) {
-            let v0 = vtx_buffer[idxs[0] as usize];
-            let v1 = vtx_buffer[idxs[1] as usize];
-            let v2 = vtx_buffer[idxs[2] as usize];
-            let cols = [v0.col, v1.col, v2.col, v0.col];
-            self.path
-                .extend_from_slice(&[v0.pos, v1.pos, v2.pos, v0.pos]);
-            self.build_path_stroke_multi_color(thickness, &cols);
+        for i in 0..memory.chunks.len() {
+            let (v, i) = memory.get_chunk_data(i).unwrap();
+
+            for idxs in i.chunks_exact(3) {
+                let v0 = v[idxs[0] as usize];
+                let v1 = v[idxs[1] as usize];
+                let v2 = v[idxs[2] as usize];
+                let cols = [v0.col, v1.col, v2.col, v0.col];
+                self.path
+                    .extend_from_slice(&[v0.pos, v1.pos, v2.pos, v0.pos]);
+                self.build_path_stroke_multi_color(thickness, &cols);
+            }
         }
     }
 }
 
 impl gpu::RenderPassHandle for DrawList {
+    const LABEL: &'static str = "draw_list_render_pass";
+
+    fn n_render_passes(&self) -> u32 {
+        self.vtx_idx_buffer.chunks.len() as u32
+    }
+
     fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-        // TODO: reuse vertex and index buffer
-        // TODO: allocate large buffer e.g. 2048 rects
+        self.draw_multiple(rpass, wgpu, 0);
+    }
 
-        let vtx = wgpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("ui_vtx_buffer"),
-                contents: &bytemuck::cast_slice(&self.vtx_buffer),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-        let idx = wgpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("ui_idx_buffer"),
-                contents: &bytemuck::cast_slice(&self.idx_buffer),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
+    fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {
         let global_uniform = GlobalUniform {
             proj: Mat4::orthographic_lh(
                 0.0,
@@ -2794,7 +3021,6 @@ impl gpu::RenderPassHandle for DrawList {
                 0.0,
             ),
         };
-        // .build_bind_group(wgpu);
 
         let bind_group = build_bind_group(
             global_uniform,
@@ -2802,16 +3028,19 @@ impl gpu::RenderPassHandle for DrawList {
             wgpu,
         );
 
-        // println!("{}", self.font_atlas.textures.len());
+        let (verts, indxs) = self.vtx_idx_buffer.get_chunk_data(i as usize).unwrap();
+
+        wgpu.queue
+            .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(verts));
+        wgpu.queue
+            .write_buffer(&self.gpu_indices, 0, bytemuck::cast_slice(indxs));
 
         rpass.set_bind_group(0, &bind_group, &[]);
-
-        rpass.set_vertex_buffer(0, vtx.slice(..));
-        rpass.set_index_buffer(idx.slice(..), wgpu::IndexFormat::Uint32);
-
+        rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
+        rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
         rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
 
-        rpass.draw_indexed(0..self.idx_buffer.len() as u32, 0, 0..1);
+        rpass.draw_indexed(0..indxs.len() as u32, 0, 0..1);
     }
 }
 
@@ -2869,15 +3098,10 @@ impl gpu::ShaderHandle for UiShader {
 
             @fragment
             fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-                let c0 = textureSample(texture, samp, in.uv);
+                let c0 = textureSample(texture, samp, in.uv) * in.color;
                 let c1 = in.color;
 
                 return select(c0, c1, in.tex != 1);
-                // if in.tex == 1 {
-                //     return textureSample(texture, samp, in.uv);
-                // } else {
-                //     return in.color;
-                // }
             }
             "#;
 
@@ -2940,5 +3164,118 @@ impl gpu::ShaderHandle for UiShader {
             }))
             .sample_count(gpu::Renderer::multisample_count())
             .build(&wgpu.device)
+    }
+}
+
+/// Represents a contiguous segment of vertex and index data
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawChunk {
+    pub vtx_ptr: usize,
+    pub idx_ptr: usize,
+    pub n_vtx: usize,
+    pub n_idx: usize,
+}
+
+/// A chunked buffer storing vertices and indices,
+///
+/// Allowing multiple render passes
+/// when a single draw exceeds GPU limits or predefined chunk sizes.
+#[derive(Debug, Clone)]
+pub struct DrawChunks {
+    pub max_vtx_per_chunk: usize,
+    pub max_idx_per_chunk: usize,
+    pub vtx_alloc: Vec<Vertex>,
+    pub idx_alloc: Vec<u32>,
+    /// Current write offset in `vtx_alloc`.
+    pub vtx_ptr: usize,
+    /// Current write offset in `idx_alloc`.
+    pub idx_ptr: usize,
+    pub chunks: Vec<DrawChunk>,
+}
+
+impl DrawChunks {
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.vtx_ptr = 0;
+        self.idx_ptr = 0;
+    }
+
+    pub fn new(max_vtx_per_chunk: usize, max_idx_per_chunk: usize) -> Self {
+        Self {
+            max_vtx_per_chunk,
+            max_idx_per_chunk,
+            vtx_alloc: vec![],
+            idx_alloc: vec![],
+            vtx_ptr: 0,
+            idx_ptr: 0,
+            chunks: vec![],
+        }
+    }
+
+    pub fn get_chunk_data(&self, chunk_idx: usize) -> Option<(&[Vertex], &[u32])> {
+        self.chunks.get(chunk_idx).map(|chunk| {
+            let vtx_slice = &self.vtx_alloc[chunk.vtx_ptr..chunk.vtx_ptr + chunk.n_vtx];
+            let idx_slice = &self.idx_alloc[chunk.idx_ptr..chunk.idx_ptr + chunk.n_idx];
+            (vtx_slice, idx_slice)
+        })
+    }
+
+    pub fn push(&mut self, vtx: &[Vertex], idx: &[u32]) {
+        if vtx.len() > self.max_vtx_per_chunk || idx.len() > self.max_idx_per_chunk {
+            panic!(
+                "Input data exceeds maximum chunk size: vtx={}, idx={}, max_vtx={}, max_idx={}",
+                vtx.len(),
+                idx.len(),
+                self.max_vtx_per_chunk,
+                self.max_idx_per_chunk
+            );
+        }
+
+        if self.chunks.is_empty() {
+            self.chunks.push(DrawChunk {
+                vtx_ptr: 0,
+                idx_ptr: 0,
+                n_vtx: 0,
+                n_idx: 0,
+            });
+        }
+
+        let c = *self.chunks.last().unwrap();
+
+        if c.n_vtx + vtx.len() > self.max_vtx_per_chunk
+            || c.n_idx + idx.len() > self.max_idx_per_chunk
+        {
+            self.chunks.push(DrawChunk {
+                vtx_ptr: self.vtx_ptr,
+                idx_ptr: self.idx_ptr,
+                n_vtx: 0,
+                n_idx: 0,
+            });
+        }
+
+        let c = self.chunks.last_mut().unwrap();
+
+        if self.vtx_alloc.len() < self.vtx_ptr + vtx.len() {
+            self.vtx_alloc
+                .resize(self.vtx_ptr + vtx.len(), Vertex::ZERO);
+        }
+
+        if self.idx_alloc.len() < self.idx_ptr + idx.len() {
+            self.idx_alloc.resize(self.idx_ptr + idx.len(), 0);
+        }
+
+        self.vtx_alloc[self.vtx_ptr..self.vtx_ptr + vtx.len()].copy_from_slice(vtx);
+        self.idx_alloc[self.idx_ptr..self.idx_ptr + idx.len()]
+            .iter_mut()
+            .zip(idx.iter())
+            .for_each(|(dst, &src)| *dst = src + c.n_vtx as u32);
+        // for (i, &index) in idx.iter().enumerate() {
+        //     self.idx_alloc[self.idx_ptr + i] = index + c.n_vtx as u32;
+        // }
+
+        c.n_vtx += vtx.len();
+        c.n_idx += idx.len();
+        self.vtx_ptr += vtx.len();
+        self.idx_ptr += idx.len();
     }
 }

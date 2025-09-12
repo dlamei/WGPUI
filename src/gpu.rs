@@ -128,7 +128,7 @@ pub struct VertexDesc {
 }
 
 /// sync structs tagged with @rust with the provided shader templates
-/// 
+///
 pub fn pre_process_shader_code(
     code: &str,
     structs_desc: &ShaderTemplates<'_>, // struct_names: &[&str; N],
@@ -1180,6 +1180,8 @@ pub trait ShaderHandle {
 }
 
 pub trait RenderPassHandle {
+    const LABEL: &'static str;
+
     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
         wgpu::LoadOp::Load
     }
@@ -1188,6 +1190,11 @@ pub trait RenderPassHandle {
     }
 
     fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU);
+
+    fn n_render_passes(&self) -> u32 {
+        1
+    }
+    fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {}
 }
 
 pub struct RenderTarget<'a> {
@@ -1208,22 +1215,65 @@ impl<'a> Drop for RenderTarget<'a> {
 
 impl<'a> RenderTarget<'a> {
     pub fn render<RH: RenderPassHandle>(&mut self, rh: &RH) {
-        let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.target_view,
-                resolve_target: self.resolve_view.as_ref(),
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: rh.load_op(),
-                    store: rh.store_op(),
-                },
-            })],
-            depth_stencil_attachment: None,
-            label: Some("main render pass"),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+        let n_passes = rh.n_render_passes();
 
-        rh.draw(&mut rpass, self.wgpu);
+        if n_passes == 1 {
+            log::trace!("[RENDERPASS] {}", RH::LABEL);
+            let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.target_view,
+                    resolve_target: self.resolve_view.as_ref(),
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: rh.load_op(),
+                        store: rh.store_op(),
+                    },
+                })],
+                depth_stencil_attachment: None,
+                label: Some("main render pass"),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            rh.draw(&mut rpass, self.wgpu);
+            return;
+        }
+
+        log::trace!("[RENDERPASS] {} x {n_passes}", RH::LABEL);
+        for i in 0..n_passes {
+            {
+                let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.target_view,
+                        resolve_target: self.resolve_view.as_ref(),
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: rh.load_op(),
+                            store: rh.store_op(),
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    label: Some("main render pass"),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                rh.draw_multiple(&mut rpass, self.wgpu, i);
+            }
+
+            let mut old_encoder =
+                std::mem::ManuallyDrop::new(self.wgpu.device.create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor {
+                        label: Some(&format!("renderpass_encoder x {i}")),
+                    },
+                ));
+
+            std::mem::swap(&mut old_encoder, &mut self.encoder);
+
+            unsafe {
+                let encoder = std::mem::ManuallyDrop::take(&mut old_encoder);
+                self.wgpu.queue.submit(Some(encoder.finish()));
+            }
+        }
     }
 }

@@ -60,12 +60,13 @@ impl AppSetup {
             return;
         }
 
-
         let window = event_loop
-            .create_window(winit::window::Window::default_attributes()
-                .with_title("Atlas")
-                .with_window_icon(Some(load_window_icon()))
-                ).unwrap();
+            .create_window(
+                winit::window::Window::default_attributes()
+                    .with_title("Atlas")
+                    .with_window_icon(Some(load_window_icon())),
+            )
+            .unwrap();
 
         let window_handle = Arc::new(window);
         // self.window = Some(window_handle.clone());
@@ -257,27 +258,32 @@ impl App {
         //     return;
         // }
 
-        self.on_update();
-
         match event {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
             }
             WE::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
-                let state = match state {
+                let pressed = match state {
                     ElementState::Pressed => true,
                     ElementState::Released => false,
                 };
 
                 match button {
-                    MouseButton::Left => self.ui.set_mouse_press(MouseBtn::Left, state),
-                    MouseButton::Right => self.ui.set_mouse_press(MouseBtn::Right, state),
-                    MouseButton::Middle => self.ui.set_mouse_press(MouseBtn::Middle, state),
+                    MouseButton::Left => {
+                        // NOTE: mimic dragging the title bar with snapping support
+                        // if pressed {
+                        //     self.window.drag_window();
+                        // }
+                        self.ui.set_mouse_press(MouseBtn::Left, pressed);
+                    }
+                    MouseButton::Right => self.ui.set_mouse_press(MouseBtn::Right, pressed),
+                    MouseButton::Middle => self.ui.set_mouse_press(MouseBtn::Middle, pressed),
                     _ => (),
                 }
             }
             WE::RedrawRequested => {
+                self.on_update();
                 self.on_redraw(event_loop);
             }
             WE::KeyboardInput { event, .. } => {
@@ -297,109 +303,100 @@ impl App {
         self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
         self.ui.start_frame();
 
-        self.ui.begin_widget(
-            "a",
-            WidgetOpt::new()
-                .fill(RGBA::INDIGO)
-                .draggable()
-                .spacing(40.0)
-                .padding(30.0)
-                .size_min_fit()
-                .size_max_px(2000.0, 1300.0)
-                .resizable()
-                .corner_radius(10.0)
-                .outline(RGBA::MAGENTA, 5.0)
-                .pos_fix(100.0, 100.0), // .size_fit(), // .size_fix(500.0, 300.0)
-                                        // .size_fit_x(),
-        );
-
-        static mut toggle: bool = false;
-
-        if self.ui.add_button("hello") {
-            unsafe {
-                toggle = !toggle;
-            }
-        }
-
-        if unsafe { toggle } {
+        for i in 0..10 {
             self.ui.begin_widget(
-                "df",
+                &format!("outer_{}", i + 1),
                 WidgetOpt::new()
-                    .fill(RGBA::PASTEL_PURPLE)
-                    .padding(100.0)
-                    .size_px(200.0, 200.0)
+                    .draggable()
+                    .fill(RGBA::CARMINE)
+                    .corner_radius(40.0)
+                    .outline(RGBA::DARK_BLUE, 10.0)
+                    .padding(25.0)
+                    .size_fit(),
             );
+
+            self.ui.add_label(&format!("window: {}", i + 1), 64.0);
+            self.ui.offset_cursor_y(24.0);
+
+            self.ui.begin_widget(
+                "content",
+                WidgetOpt::new()
+                    .fill(RGBA::INDIGO)
+                    .spacing(40.0)
+                    .padding(30.0)
+                    .size_min_fit()
+                    .size_max_px(1000.0, 1300.0)
+                    .size_fit()
+                    .resizable()
+                    .corner_radius(40.0),
+            );
+
+            static mut toggle: bool = false;
+
+            if self.ui.add_button("hello") {
+                unsafe {
+                    toggle = !toggle;
+                }
+            }
+
+            if unsafe { toggle } {
+                self.ui.begin_widget(
+                    "toggle_rect",
+                    WidgetOpt::new()
+                        .fill(RGBA::PASTEL_MINT)
+                        .padding(100.0)
+                        .size_px(200.0, 200.0),
+                );
+                self.ui.end_widget();
+            }
+
+            if self.ui.add_button("test") {
+                log::info!("test");
+            }
+
+            if self.ui.add_button("abcdefghijklmnopqrstuvwxyz") {
+                log::info!("abcdefghijklmnopqrstuvwxyz");
+            }
+
+            let (id, _) = self.ui.begin_widget(
+                "box 2",
+                WidgetOpt::new()
+                    .fill(RGBA::CARMINE)
+                    .spacing(40.0)
+                    .padding(10.0)
+                    .layout_h()
+                    .corner_radius(30.0)
+                    .size_fit(),
+            );
+
+            let (_, signal) = self.ui.begin_widget(
+                "green circle",
+                WidgetOpt::new()
+                    .fill(RGBA::GREEN)
+                    .clickable()
+                    .resizable()
+                    .corner_radius(100.0),
+            );
+
+            if signal.released() {
+                log::info!("inner rect released");
+            }
+
+            self.ui.end_widget();
+
+            let offset = self.ui[id].rect.height() / 2.0;
+            self.ui.offset_cursor_y(offset - 32.0);
+
+            if self.ui.add_button("hello world") {
+                log::info!("hello world");
+            }
+
+            self.ui.end_widget();
+            self.ui.end_widget();
             self.ui.end_widget();
         }
 
-        if self.ui.add_button("tes") {
-            log::info!("tes");
-        }
-
-        if self.ui.add_button("abcdefghijklmnopqrstuvwxyz") {
-            log::info!("abcdefghijklmnopqrstuvwxyz");
-        }
-
-        self.ui.begin_widget(
-            "d",
-            WidgetOpt::new()
-                .fill(RGBA::PASTEL_PURPLE)
-                .spacing(40.0)
-                .padding(10.0)
-                .layout_h()
-                .corner_radius(10.0)
-                .outline(RGBA::MAGENTA, 5.0)
-                .size_x_fit()
-                .size_y_fit(),
-        );
-        let (_, signal) = self.ui.begin_widget(
-            "c",
-            WidgetOpt::new()
-                .fill(RGBA::GREEN)
-                .clickable()
-                .resizable()
-                .corner_radius(100.0)
-                .outline(RGBA::MAGENTA, 5.0)
-                .size_min_px(0.0, 0.0),
-        );
-
-        if signal.released() {
-            log::info!("inner rect released");
-        }
-
-        self.ui.end_widget();
-
-        if self.ui.add_button("sdfsdfsdf") {
-            log::info!("dsfsdfsfsdf");
-        }
-
-        self.ui.end_widget();
-
-        // self.ui_state.add_widget(
-        //     "b",
-        //     WidgetOpt::new()
-        //         .fill(RGBA::BLUE)
-        //         .clickable()
-        //         .size_fix(50.0, 800.0),
-        // );
-
-        // self.ui_state.end_widget();
-        self.ui.end_widget();
-
-        self.ui.begin_widget(
-            "d",
-            WidgetOpt::new()
-                .fill(RGBA::BLUE)
-                .draggable()
-                .spacing(15.0)
-                .padding(100.0)
-                .resizable()
-                .corner_radius(10.0)
-                .outline(RGBA::RED, 5.0)
-                .pos_fix(100.0, 100.0)
-                .size_min_fit(),
-        );
-        self.ui.end_widget();
+        self.ui.debug_window(self.delta_time);
 
         self.ui.draw_dbg_wireframe = self.dbg_wireframe;
         self.ui.end_frame();
@@ -437,6 +434,7 @@ impl App {
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
 
+        // log::info!("{dt:?}");
 
         self.window.pre_present_notify();
         let status = self.renderer.prepare_frame();
@@ -456,7 +454,10 @@ impl App {
         {
             let mut surface = self.renderer.surface_target();
             surface.render(&ClearScreen(RGBA::PASTEL_MINT));
-            surface.render(&self.ui);
+
+            if !self.ui.roots.is_empty() {
+                surface.render(&self.ui.draw);
+            }
         }
 
         self.renderer.present_frame();
