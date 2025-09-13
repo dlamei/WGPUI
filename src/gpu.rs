@@ -7,7 +7,7 @@ use std::{
 
 use glam::Vec2;
 
-use crate::utils;
+use crate::{mouse, utils};
 
 #[derive(Debug, Clone)]
 pub struct Texture {
@@ -262,17 +262,6 @@ pub trait Vertex: Sized + Copy + bytemuck::Pod + bytemuck::Zeroable {
         }
     }
 
-    // fn vertex_attributes_offset(offset: u32) -> Vec<wgpu::VertexAttribute> {
-    //     Self::VERTEX_ATTRIBUTES
-    //         .iter()
-    //         .copied()
-    //         .map(|mut attrib| {
-    //             attrib.shader_location += offset;
-    //             attrib
-    //         })
-    //         .collect()
-    // }
-
     fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
         Self::buffer_layout_with_attributes(Self::VERTEX_ATTRIBUTES)
     }
@@ -299,23 +288,6 @@ pub trait AsVertexFormat {
     const WGSL: Option<&'static str>;
 }
 
-// macro_rules! impl_as_vertex_fmt {
-//     ($ty:ty: $fmt:ident) => {
-//         impl AsVertexFormat for $ty {
-//             const FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
-//         }
-//     };
-// }
-
-// macro_rules! impl_as_vertex_fmt {
-//     ($( $ty:ty: $fmt:ident ),* $(,)?) => {
-//         $(
-//             impl AsVertexFormat for $ty {
-//                 const FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
-//             }
-//         )*
-//     };
-// }
 
 macro_rules! impl_as_vertex_fmt {
     // single entry, optionally with WGSL
@@ -405,285 +377,6 @@ impl_as_vertex_fmt! {
     utils::RGBA: Float32x4: "vec4<f32>",
 }
 
-pub struct Renderer {
-    pub framebuffer_msaa: Option<wgpu::TextureView>,
-    pub framebuffer_resolve: wgpu::TextureView,
-    pub depthbuffer: wgpu::TextureView,
-    pub active_surface: Option<wgpu::SurfaceTexture>,
-    pub wgpu: WGPUHandle,
-}
-
-impl Renderer {
-    pub fn resolve_target(&mut self) -> RenderTarget<'_> {
-        let Some(surface_texture) = &mut self.active_surface else {
-            log::error!("Renderer::prepare_frame must be called before calling this function");
-            panic!();
-        };
-
-        let surface_texture_view =
-            surface_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: wgpu::Label::default(),
-                    aspect: wgpu::TextureAspect::default(),
-                    format: Some(self.wgpu.surface_format),
-                    dimension: None,
-                    base_mip_level: 0,
-                    mip_level_count: None,
-                    base_array_layer: 0,
-                    array_layer_count: None,
-                    usage: None,
-                });
-
-        let encoder = self
-            .wgpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("renderpass_encoder"),
-            });
-
-        RenderTarget {
-            target_view: self.framebuffer_msaa.clone().unwrap(),
-            resolve_view: Some(surface_texture_view),
-            wgpu: &self.wgpu,
-            encoder: EncoderHandle::new(&self.wgpu.device, &self.wgpu.queue, "render_pass_encoder"),
-        }
-    }
-
-    pub fn surface_target(&mut self) -> RenderTarget<'_> {
-        let Some(surface_texture) = &mut self.active_surface else {
-            log::error!("Renderer::prepare_frame must be called before calling this function");
-            panic!();
-        };
-
-        let surface_texture_view =
-            surface_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: wgpu::Label::default(),
-                    aspect: wgpu::TextureAspect::default(),
-                    format: Some(self.wgpu.surface_format),
-                    dimension: None,
-                    base_mip_level: 0,
-                    mip_level_count: None,
-                    base_array_layer: 0,
-                    array_layer_count: None,
-                    usage: None,
-                });
-
-        let encoder = self
-            .wgpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("renderpass_encoder"),
-            });
-
-        if Self::use_multisample() {
-            RenderTarget {
-                target_view: self.framebuffer_msaa.clone().unwrap(),
-                resolve_view: Some(surface_texture_view),
-                // encoder: std::mem::ManuallyDrop::new(encoder),
-                encoder: EncoderHandle::new(
-                    &self.wgpu.device,
-                    &self.wgpu.queue,
-                    "render_pass_encoder",
-                ),
-                wgpu: &self.wgpu,
-            }
-        } else {
-            RenderTarget {
-                target_view: surface_texture_view,
-                resolve_view: None,
-                // encoder: std::mem::ManuallyDrop::new(encoder),
-                encoder: EncoderHandle::new(
-                    &self.wgpu.device,
-                    &self.wgpu.queue,
-                    "render_pass_encoder",
-                ),
-                wgpu: &self.wgpu,
-            }
-        }
-    }
-
-    pub fn prepare_frame(&mut self) -> Result<(), wgpu::SurfaceError> {
-        if self.active_surface.is_some() {
-            log::error!("Renderer::prepare_frame called with active surface!");
-            panic!();
-        }
-
-        let surface_texture = self.wgpu.surface.get_current_texture()?;
-
-        self.active_surface = Some(surface_texture);
-        Ok(())
-    }
-
-    pub fn present_frame(&mut self) {
-        if let Some(surface) = self.active_surface.take() {
-            surface.present();
-            self.active_surface = None;
-        }
-    }
-
-    pub async fn new_async(
-        window: impl Into<wgpu::SurfaceTarget<'static>>,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let wgpu = WGPU::new_async(window, width, height).await;
-
-        let framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(&wgpu, width, height));
-        let framebuffer_resolve = Self::create_framebuffer_resolve_texture(&wgpu, width, height);
-        let depthbuffer = Self::create_depthbuffer(&wgpu, width, height);
-
-        Self {
-            framebuffer_msaa,
-            framebuffer_resolve,
-            depthbuffer,
-            active_surface: None,
-            wgpu: wgpu.into(),
-        }
-    }
-
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.wgpu.resize(width, height);
-        self.framebuffer_msaa = Some(Self::create_framebuffer_msaa_texture(
-            &self.wgpu, width, height,
-        ));
-        self.framebuffer_resolve =
-            Self::create_framebuffer_resolve_texture(&self.wgpu, width, height);
-        self.depthbuffer = Self::create_depthbuffer(&self.wgpu, width, height);
-    }
-
-    pub fn create_framebuffer_resolve_texture(
-        wgpu: &WGPU,
-        width: u32,
-        height: u32,
-    ) -> wgpu::TextureView {
-        let width = width.max(1);
-        let height = height.max(1);
-        let texture = wgpu.device.create_texture(
-            &(wgpu::TextureDescriptor {
-                label: Some("Framebuffer Resolve Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu.surface_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }),
-        );
-        texture.create_view(&wgpu::TextureViewDescriptor {
-            label: None,
-            format: Some(wgpu.surface_format),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            base_array_layer: 0,
-            array_layer_count: None,
-            mip_level_count: None,
-            usage: None,
-        })
-    }
-
-    pub fn depth_format() -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Depth32Float
-    }
-
-    // pub const fn use_multisample() -> bool {
-    //     #[cfg(not(target_arch = "wasm32"))]
-    //     return true;
-    //     #[cfg(target_arch = "wasm32")]
-    //     return false;
-    // }
-
-    pub const fn multisample_count() -> u32 {
-        #[cfg(not(target_arch = "wasm32"))]
-        return 4;
-        #[cfg(target_arch = "wasm32")]
-        return 1;
-    }
-
-    pub fn use_multisample() -> bool {
-        Self::multisample_count() != 1
-    }
-
-    pub fn create_framebuffer_msaa_texture(
-        wgpu: &WGPU,
-        width: u32,
-        height: u32,
-    ) -> wgpu::TextureView {
-        let width = width.max(1);
-        let height = height.max(1);
-
-        let texture = wgpu.device.create_texture(
-            &(wgpu::TextureDescriptor {
-                label: Some("Framebuffer Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: Self::multisample_count(),
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu.surface_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }),
-        );
-        texture.create_view(&wgpu::TextureViewDescriptor {
-            label: None,
-            format: Some(wgpu.surface_format),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            base_array_layer: 0,
-            array_layer_count: None,
-            mip_level_count: None,
-            usage: None,
-        })
-    }
-
-    pub fn create_depthbuffer(wgpu: &WGPU, width: u32, height: u32) -> wgpu::TextureView {
-        let width = width.max(1);
-        let height = height.max(1);
-        let texture = wgpu.device.create_texture(
-            &(wgpu::TextureDescriptor {
-                label: Some("Depth Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: Self::multisample_count(),
-                dimension: wgpu::TextureDimension::D2,
-                format: Self::depth_format(),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }),
-        );
-        texture.create_view(&wgpu::TextureViewDescriptor {
-            label: None,
-            format: Some(Self::depth_format()),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            base_array_layer: 0,
-            array_layer_count: None,
-            mip_level_count: None,
-            usage: None,
-        })
-    }
-}
 
 #[derive(Debug)]
 pub struct ResourceCache<ID, RSRC> {
@@ -721,32 +414,14 @@ pub type WGPUHandle = Arc<WGPU>;
 
 pub struct WGPU {
     pub pipeline_cache: Mutex<ResourceCache<UUID, wgpu::RenderPipeline>>,
-    pub surface: wgpu::Surface<'static>,
+    // pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub surface_config: RefCell<wgpu::SurfaceConfiguration>,
+    // pub surface_config: RefCell<wgpu::SurfaceConfiguration>,
     pub surface_format: wgpu::TextureFormat,
 }
 
 impl WGPU {
-    pub fn width(&self) -> u32 {
-        self.surface_config.borrow().width.max(1)
-    }
-
-    pub fn height(&self) -> u32 {
-        self.surface_config.borrow().height.max(1)
-    }
-
-    pub fn aspect_ratio(&self) -> f32 {
-        self.width() as f32 / self.height() as f32
-    }
-
-    pub fn resize(&self, width: u32, height: u32) {
-        self.surface_config.borrow_mut().width = width.max(1);
-        self.surface_config.borrow_mut().height = height.max(1);
-        self.surface
-            .configure(&self.device, &*self.surface_config.borrow());
-    }
 
     pub fn instance() -> wgpu::Instance {
         wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -784,24 +459,16 @@ impl WGPU {
             .clone()
     }
 
-    /// Get the current surface texture and its view
-    pub fn current_frame(
-        &self,
-    ) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView), wgpu::SurfaceError> {
-        let surface_texture = self.surface.get_current_texture()?;
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        Ok((surface_texture, view))
-    }
 
     pub async fn new_async(
-        window: impl Into<wgpu::SurfaceTarget<'static>>,
+        window: winit::window::Window,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> (Self, Window) {
+        let window = Box::new(window);
         let instance = Self::instance();
-        let surface = instance.create_surface(window).unwrap();
+        let (window, surface) = unsafe { create_static_surface_with_window(window, &instance) };
+        // let surface = instance.create_surface(window).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -862,14 +529,16 @@ impl WGPU {
 
         surface.configure(&device, &surface_config);
 
-        Self {
+        let window = Window::from_surface(window.into(), surface, surface_config);
+
+        (Self {
             pipeline_cache: Mutex::new(ResourceCache::new()),
-            surface,
+            // surface,
             device,
             queue,
-            surface_config: RefCell::new(surface_config),
+            // surface_config: RefCell::new(surface_config),
             surface_format,
-        }
+        }, window)
     }
 }
 
@@ -1389,15 +1058,19 @@ pub struct WindowOpt {
 
 pub type WindowId = winit::window::WindowId;
 
+pub struct WindowCore {
+    pub surface: wgpu::Surface<'static>,
+    // keep as last field, so its dropped after all the others
+    pub raw: Box<winit::window::Window>,
+}
+
+#[derive(Clone)]
 pub struct Window {
     pub id: WindowId,
-    pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
     // TODO: framebuffer, depthtexture etc...
     pub current_surface_texture: Option<wgpu::SurfaceTexture>,
-
-    // keep as last field, so its dropped after all the others
-    pub raw: Box<winit::window::Window>,
+    pub core: Arc<WindowCore>,
 }
 
 /// create a surface with a static lifetime of the given window
@@ -1419,10 +1092,19 @@ unsafe fn create_static_surface_with_window(
 }
 
 impl Window {
+    pub fn set_cursor_icon(&self, icon: mouse::CursorIcon) {
+        self.core.raw.set_cursor(icon);
+    }
+
     pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
         self.surface_config.width = width.max(1);
         self.surface_config.height = height.max(1);
-        self.surface.configure(device, &self.surface_config);
+        self.core.surface.configure(device, &self.surface_config);
+    }
+
+    pub fn size(&self) -> Vec2 {
+        let size = self.core.raw.inner_size();
+        Vec2::new(size.width as f32, size.height as f32)
     }
 
     pub fn from_surface(
@@ -1433,10 +1115,12 @@ impl Window {
         let id = raw.id();
         Self {
             id,
-            surface,
             surface_config,
             current_surface_texture: None,
-            raw,
+            core: Arc::new(WindowCore {
+                surface,
+                raw
+            })
         }
     }
 
@@ -1468,10 +1152,12 @@ impl Window {
 
         Self {
             id: raw.id(),
-            surface,
             surface_config,
             current_surface_texture: None,
-            raw,
+            core: Arc::new(WindowCore {
+                surface,
+                raw,
+            })
         }
     }
 
@@ -1487,22 +1173,22 @@ impl Window {
     }
 
     pub fn reconfigure(&mut self, device: &wgpu::Device) {
-        let size = self.raw.inner_size();
+        let size = self.core.raw.inner_size();
         self.resize(size.width, size.height, device)
     }
 
     /// returns false when unable to accquire the current surface texture
     ///
-    pub fn prepare_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Option<RenderTarget<'_>> {
+    pub fn prepare_frame<'a>(&mut self, wgpu: &'a WGPU) -> Option<RenderTarget<'a>> {
         if self.current_surface_texture.is_some() {
             log::error!("Renderer::prepare_frame called with active surface!");
             panic!();
         }
 
-        let surface_texture = match self.surface.get_current_texture() {
+        let surface_texture = match self.core.surface.get_current_texture() {
             Ok(st) => st,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.reconfigure(device);
+                self.reconfigure(&wgpu.device);
                 return None;
             }
             Err(e) => {
@@ -1520,12 +1206,13 @@ impl Window {
             target_view: surface_texture_view,
             resolve_view: None,
             // encoder: EncoderHandle::new(device, queue),
-            encoder: todo!(),
-            wgpu: todo!(),
+            encoder: EncoderHandle::new(&wgpu.device, &wgpu.queue, "surface_texture_encoder"),
+            wgpu,
         })
     }
 
     pub fn present_frame(&mut self) {
+        self.core.raw.pre_present_notify();
         let surface_texture = self
             .current_surface_texture
             .take()
@@ -1534,186 +1221,8 @@ impl Window {
     }
 
     pub fn request_redraw(&self) {
-        self.raw.request_redraw();
+        self.core.raw.request_redraw();
     }
 
-    // pub fn get_surface_texture(&self) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView), wgpu::SurfaceError> {
-    //     let surface_texture = self.surface.get_current_texture()?;
-    //     let view = surface_texture
-    //         .texture
-    //         .create_view(&wgpu::TextureViewDescriptor::default());
-    //     Ok((surface_texture, view))
-    // }
 }
 
-pub type CtxHandle = Arc<Ctx>;
-
-pub struct Ctx {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-
-    pub instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
-
-    pub pipeline_cache: RefCell<ResourceCache<UUID, wgpu::RenderPipeline>>,
-
-    pub main_window: Window,
-    pub sub_windows: HashMap<WindowId, Window>,
-    pub window_opt: WindowOpt,
-}
-
-impl Ctx {
-    pub async fn new_async(raw_window: winit::window::Window, width: u32, height: u32) -> Self {
-        let backend = if cfg!(target_os = "linux") {
-            wgpu::Backends::PRIMARY
-        } else if cfg!(target_os = "macos") {
-            wgpu::Backends::METAL
-        } else if cfg!(target_os = "windows") {
-            wgpu::Backends::DX12 | wgpu::Backends::GL
-        } else if cfg!(target_arch = "wasm32") {
-            wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU
-        } else {
-            wgpu::Backends::all()
-        };
-
-        let present_mode = if cfg!(target_arch = "wasm32") {
-            wgpu::PresentMode::Fifo
-        } else {
-            wgpu::PresentMode::Immediate
-        };
-
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: backend,
-            ..Default::default()
-        });
-
-        let (raw, surface) =
-            unsafe { create_static_surface_with_window(raw_window.into(), &instance) };
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("Failed to request adapter!");
-
-        let (device, queue) = {
-            log::info!("WGPU Adapter Features: {:#?}", adapter.features());
-            adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("WGPU Device"),
-                    memory_hints: wgpu::MemoryHints::default(),
-                    trace: wgpu::Trace::Off,
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    required_features: wgpu::Features::POLYGON_MODE_LINE,
-                    #[cfg(target_arch = "wasm32")]
-                    required_features: wgpu::Features::default(),
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-                    #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-                    #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                        .using_resolution(adapter.limits()),
-                })
-                .await
-                .expect("Failed to request a device!")
-        };
-
-        let surface_capabilities = surface.get_capabilities(&adapter);
-
-        let surface_format = surface_capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or(surface_capabilities.formats[0]);
-
-        let alpha_mode = surface_capabilities.alpha_modes[0];
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width,
-            height,
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &surface_config);
-
-        let window_opt = WindowOpt {
-            surface_format,
-            alpha_mode,
-            backend,
-            present_mode,
-        };
-
-        Self {
-            pipeline_cache: RefCell::new(ResourceCache::new()),
-            device,
-            queue,
-            instance,
-            adapter,
-            main_window: Window::from_surface(raw, surface, surface_config),
-            sub_windows: HashMap::new(),
-            window_opt,
-        }
-    }
-
-    /// Get or create a pipeline
-    pub fn get_or_init_pipeline<F>(&self, id: UUID, load: F) -> Arc<wgpu::RenderPipeline>
-    where
-        F: FnOnce() -> wgpu::RenderPipeline,
-    {
-        self.pipeline_cache
-            .borrow_mut()
-            .get_or_insert_with(id, load)
-            .clone()
-    }
-
-    /// Register a new render pipeline with the given ID
-    pub fn register_pipeline(&self, id: UUID, pipeline: wgpu::RenderPipeline) {
-        self.pipeline_cache.borrow_mut().register(id, pipeline);
-    }
-
-    /// Get a registered pipeline by ID
-    pub fn get_pipeline(&self, id: UUID) -> Option<Arc<wgpu::RenderPipeline>> {
-        self.pipeline_cache.borrow_mut().get(id)
-    }
-
-    pub fn get_window(&self, id: WindowId) -> &Window {
-        if id == self.main_window.id {
-            return &self.main_window;
-        }
-        self.sub_windows.get(&id).unwrap()
-    }
-
-    pub fn get_mut_window(&mut self, id: WindowId) -> &mut Window {
-        if id == self.main_window.id {
-            return &mut self.main_window;
-        }
-        self.sub_windows.get_mut(&id).unwrap()
-    }
-
-    pub fn add_window(&mut self, window: winit::window::Window, width: u32, height: u32) {
-        let window = Window::new(
-            window,
-            self.window_opt,
-            width,
-            height,
-            &self.instance,
-            &self.device,
-        );
-        self.sub_windows.insert(window.id, window);
-    }
-
-    pub fn remove_window(&mut self, id: WindowId) {
-        self.sub_windows.remove(&id);
-    }
-}

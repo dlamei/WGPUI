@@ -2,7 +2,6 @@ use glam::{Mat4, UVec2, UVec4, Vec2, Vec4};
 use macros::vertex;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
-use winit::window::Window;
 
 use std::{
     cell::RefCell,
@@ -15,7 +14,7 @@ use std::{
 
 use crate::{
     RGBA, ctext,
-    gpu::{self, ShaderHandle, Vertex as VertexTyp, VertexDesc, WGPU, WGPUHandle},
+    gpu::{self, ShaderHandle, Vertex as VertexTyp, VertexDesc, WGPU, WGPUHandle, Window},
     mouse::{CursorIcon, MouseBtn, MouseRec},
     rect::Rect,
     utils::{Duration, Instant},
@@ -855,7 +854,7 @@ pub struct State {
     pub prev_n_draw_calls: u32,
 
     pub draw_dbg_wireframe: bool,
-    pub window: Arc<Window>,
+    pub window: Window,
 }
 
 impl ops::Index<WidgetId> for State {
@@ -873,7 +872,7 @@ impl ops::IndexMut<WidgetId> for State {
 }
 
 impl State {
-    pub fn new(wgpu: WGPUHandle, window: impl Into<Arc<Window>>) -> Self {
+    pub fn new(wgpu: WGPUHandle, window: Window) -> Self {
         Self {
             draw: DrawList::new(wgpu),
             cursor_icon: CursorIcon::Default,
@@ -893,7 +892,7 @@ impl State {
             draw_dbg_wireframe: false,
             resize_threshold: 10.0,
             prev_n_draw_calls: 0,
-            window: window.into(),
+            window: window,
         }
     }
 
@@ -925,8 +924,7 @@ impl State {
         self.cursor = Vec2::ZERO;
         self.cursor_icon_changed = false;
 
-        let size = self.window.inner_size();
-        self.draw.screen_size = (size.width as f32, size.height as f32).into();
+        self.draw.screen_size = self.window.size();
 
         if self.curr_widget_action.is_none() {
             self.set_cursor_icon(CursorIcon::Default)
@@ -939,29 +937,7 @@ impl State {
         // );
     }
 
-    pub fn begin_window(&mut self) {
-        let size = self.window.inner_size();
-        let (id, _) = self.begin_widget(
-            "window",
-            WidgetOpt::new()
-                .fill(RGBA::INDIGO)
-                .size_px(size.width as f32, size.height as f32)
-                .draggable()
-                .resizable()
-                .corner_radius(10.0),
-        );
 
-        let rect = self[id].rect;
-        let width = rect.width();
-        let height = rect.height();
-        self.window
-            .request_inner_size(winit::dpi::PhysicalSize::new(width as u32, height as u32));
-        self.end_widget();
-    }
-
-    pub fn end_window(&mut self) {
-        // self.end_widget();
-    }
 
     pub fn debug_window(&mut self, dt: Duration) {
         self.begin_widget(
@@ -1103,7 +1079,7 @@ impl State {
         // this is needed because outside events can change the icon, so we only update the icon
         // when it was manually changed
         if self.cursor_icon_changed {
-            self.window.set_cursor(self.cursor_icon)
+            self.window.set_cursor_icon(self.cursor_icon)
         }
     }
 
@@ -3226,8 +3202,9 @@ impl gpu::ShaderHandle for UiShader {
                     operation: wgpu::BlendOperation::Add,
                 },
             }))
-            .sample_count(gpu::Renderer::multisample_count())
+            .sample_count(1)
             .build(&wgpu.device)
+
     }
 }
 

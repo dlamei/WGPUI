@@ -10,18 +10,15 @@ use winit::{
 };
 
 use crate::{
-    ClearScreen, Vertex, VertexPosCol,
-    gpu::Renderer,
-    mouse::MouseBtn,
-    ui::{self, WidgetOpt},
-    utils::{self, Duration, Instant, RGBA},
+    gpu::{WGPUHandle, Window, WGPU}, mouse::MouseBtn, ui::{self, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
 };
 
 pub enum AppSetup {
     UnInit {
-        window: Option<Arc<WinitWindow>>,
+        // window: Option<WinitWindow>,
+        created_window: bool,
         #[cfg(target_arch = "wasm32")]
-        renderer_rec: Option<futures::channel::oneshot::Receiver<Renderer>>,
+        renderer_rec: Option<futures::channel::oneshot::Receiver<(WGPU, Window)>>,
     },
     Init(App),
 }
@@ -29,7 +26,8 @@ pub enum AppSetup {
 impl Default for AppSetup {
     fn default() -> Self {
         Self::UnInit {
-            window: None,
+            // window: None,
+            created_window: false,
             #[cfg(target_arch = "wasm32")]
             renderer_rec: None,
         }
@@ -49,10 +47,6 @@ impl AppSetup {
         matches!(self, Self::Init(_))
     }
 
-    pub fn init_app(window: Arc<WinitWindow>, renderer: Renderer) -> App {
-        // let scale_factor = window.scale_factor() as f32;
-        App::new(renderer, window)
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed_native(&mut self, event_loop: &ActiveEventLoop) {
@@ -69,21 +63,17 @@ impl AppSetup {
             )
             .unwrap();
 
-        let window_handle = Arc::new(window);
         // self.window = Some(window_handle.clone());
 
-        let size = window_handle.inner_size();
-        let scale_factor = window_handle.scale_factor() as f32;
+        let size = window.inner_size();
+        // let scale_factor = window_handle.scale_factor() as f32;
+        // let window_handle_2 = window_handle.clone();
 
-        let window_handle_2 = window_handle.clone();
-        let renderer = utils::futures::wait_for(async move {
-            Renderer::new_async(window_handle_2, size.width, size.height).await
+        let (window, wgpu) = utils::futures::wait_for(async move {
+            WGPU::new_async(window, size.width, size.height).await
         });
-        // let renderer = pollster::block_on(async move {
-        //     Renderer::new_async(window_handle_2, size.width, size.height).await
-        // });
 
-        *self = Self::Init(Self::init_app(window_handle, renderer));
+        *self = Self::Init(App::new(window, wgpu));
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -107,14 +97,14 @@ impl AppSetup {
 
         if let Ok(new_window) = event_loop.create_window(attributes) {
             if let Self::UnInit {
-                window,
+                // window,
+                created_window,
                 renderer_rec,
             } = self
             {
-                let first_window_handle = window.is_none();
-                let window_handle = Arc::new(new_window);
+                // let first_window_handle = window.is_none();
 
-                if first_window_handle {
+                if !*created_window {
                     let (sender, receiver) = futures::channel::oneshot::channel();
                     // self.renderer_rec = Some(receiver);
                     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -122,16 +112,16 @@ impl AppSetup {
                     console_log::init().expect("Failed to initialize logger!");
                     log::info!("Canvas dimensions: ({canvas_width} x {canvas_height})");
 
-                    let window_handle_2 = window_handle.clone();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let renderer =
-                            Renderer::new_async(window_handle_2, canvas_width, canvas_height).await;
-                        if sender.send(renderer).is_err() {
+                        let (wgpu, window) =
+                            WGPU::new_async(new_window, canvas_width, canvas_height).await;
+                        if sender.send((wgpu, window)).is_err() {
                             log::error!("Failed to create and send renderer!");
                         }
                     });
 
-                    *window = Some(window_handle);
+                    // *window = Some(window_handle);
+                    *created_window = true;
                     *renderer_rec = Some(receiver);
                 }
             }
@@ -153,7 +143,7 @@ impl AppSetup {
         #[cfg(target_arch = "wasm32")]
         {
             let Self::UnInit {
-                window,
+                created_window,
                 renderer_rec,
             } = self
             else {
@@ -162,14 +152,13 @@ impl AppSetup {
             // let mut renderer_received = false;
             use winit::platform::web::WindowExtWebSys;
             if let Some(receiver) = renderer_rec.as_mut() {
-                if let Ok(Some(renderer)) = receiver.try_recv() {
-                    let window = window.as_ref().unwrap().clone();
-                    window.set_prevent_default(false);
+                if let Ok(Some((wgpu, window))) = receiver.try_recv() {
+                    window.core.raw.set_prevent_default(false);
                     window.request_redraw();
-                    let size = window.inner_size();
-                    *self = Self::Init(Self::init_app(window, renderer));
+                    let size = window.size();
+                    *self = Self::Init(App::new(wgpu, window));
                     let app = self.init_unwrap();
-                    app.resize(size.width, size.height);
+                    app.resize_main_window(size.x as u32, size.y as u32);
                     return Some(self.init_unwrap());
                 }
             }
@@ -203,7 +192,6 @@ pub struct App {
     ui: ui::State,
 
     dbg_wireframe: bool,
-    renderer: Renderer,
 
     prev_frame_time: Instant,
     delta_time: Duration,
@@ -211,42 +199,25 @@ pub struct App {
     mouse_pos: Vec2,
 
     last_size: UVec2,
-    window: Arc<WinitWindow>,
-    windows: Vec<Arc<WinitWindow>>,
+    wgpu: WGPUHandle,
+    window: Window,
 }
 
 impl App {
-    pub fn new(renderer: Renderer, window: impl Into<Arc<WinitWindow>>) -> Self {
-        let window: Arc<_> = window.into();
+    pub fn new(wgpu: WGPU, main_window: Window) -> Self {
+        let wgpu = Arc::new(wgpu);
         Self {
-            ui: ui::State::new(renderer.wgpu.clone(), window.clone()),
+            ui: ui::State::new(wgpu.clone(), main_window.clone()),
             dbg_wireframe: false,
-            renderer,
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
             last_size: UVec2::ONE,
-            window: window.clone(),
-            windows: Vec::new(),
+            wgpu,
+            window: main_window,
         }
     }
 
-    pub fn window_size(&self) -> UVec2 {
-        let size = self.window.inner_size();
-        (size.width, size.height).into()
-    }
-
-    pub fn width(&self) -> u32 {
-        self.window_size().x
-    }
-
-    pub fn height(&self) -> u32 {
-        self.window_size().y
-    }
-
-    pub fn aspect_ratio(&self) -> f32 {
-        self.width() as f32 / self.height() as f32
-    }
 
     fn on_window_event(
         &mut self,
@@ -293,7 +264,8 @@ impl App {
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
                 self.last_size = (width, height).into();
-                self.resize(width, height);
+                self.window.resize(width, height, &self.wgpu.device);
+                // self.resize(width, height);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
@@ -408,8 +380,6 @@ impl App {
 
         ui.draw_dbg_wireframe = self.dbg_wireframe;
 
-        // ui.end_window();
-
         ui.end_frame();
     }
 
@@ -422,12 +392,12 @@ impl App {
                 }
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
-                if self.windows.len() < 3 {
-                    let window = event_loop
-                        .create_window(WinitWindow::default_attributes())
-                        .unwrap();
-                    self.windows.push(Arc::new(window))
-                }
+                // if self.windows.len() < 3 {
+                //     let window = event_loop
+                //         .create_window(WinitWindow::default_attributes())
+                //         .unwrap();
+                //     self.windows.push(Arc::new(window))
+                // }
                 // let shader = ColorTint(RGBA::rand());
                 // shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
             }
@@ -442,42 +412,20 @@ impl App {
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
 
-        // log::info!("{dt:?}");
-
-        self.window.pre_present_notify();
-        let status = self.renderer.prepare_frame();
-        match status {
-            Ok(_) => (),
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                let size = self.window.inner_size();
-                self.renderer.resize(size.width, size.height);
-                return;
-            }
-            Err(e) => {
-                log::error!("prepare_frame: {e}");
-                panic!();
-            }
-        }
-
         {
-            let mut surface = self.renderer.surface_target();
-            surface.render(&ClearScreen(RGBA::PASTEL_MINT));
+            let Some(mut target) = self.window.prepare_frame(&self.wgpu) else {
+                return
+            };
 
-            if !self.ui.roots.is_empty() {
-                surface.render(&self.ui.draw);
-            }
+            target.render(&ClearScreen(RGBA::PASTEL_MINT));
+            target.render(&self.ui.draw);
         }
 
-        self.renderer.present_frame();
+        self.window.present_frame();
         self.window.request_redraw();
     }
 
-    fn resize(&mut self, w: u32, h: u32) {
-        self.renderer.resize(w, h);
+    fn resize_main_window(&mut self, w: u32, h: u32) {
+        self.window.resize(w, h, &self.wgpu.device);
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Window {
-    raw: Arc<WinitWindow>,
 }
