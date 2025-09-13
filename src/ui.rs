@@ -158,7 +158,7 @@ impl fmt::Display for WidgetId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut n = self.0;
         if n == 0 {
-            return write!(f, "ID(0)");
+            return write!(f, "0");
         }
         let mut buf = Vec::new();
         while n > 0 {
@@ -173,13 +173,13 @@ impl fmt::Display for WidgetId {
         }
         buf.reverse();
         let s = std::str::from_utf8(&buf).unwrap();
-        write!(f, "ID({})", s)
+        write!(f, "{}", s)
     }
 }
 
 impl fmt::Debug for WidgetId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
+        write!(f, "ID({self})")
     }
 }
 
@@ -747,19 +747,6 @@ impl Widget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StateStyle {
-    pub default: RGBA,
-    pub active: RGBA,
-    pub hovered: RGBA,
-}
-
-// #[derive(Debug, Clone, Copy, PartialEq)]
-// pub struct FrameStyle {
-//     pub fill: StateStyle,
-//     pub outline: StateStyle,
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Dir {
     N,
@@ -813,6 +800,22 @@ pub enum WidgetAction {
     },
 }
 
+impl fmt::Display for WidgetAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WidgetAction::Resize { dir, id, prev_rect } => write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}"),
+            WidgetAction::Move { start_pos, id } => write!(f, "MOVE {{ {id}, {start_pos} }}"),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Placement {
+    #[default]
+    Min,
+    Center,
+}
+
 pub struct State {
     pub mouse: MouseRec,
     pub frame_count: u64,
@@ -836,6 +839,8 @@ pub struct State {
     // TODO[NOTE]: maybe allow for cursor beging the center, top left, etc... when placing the widget
     /// position where next widget is drawn
     pub cursor: Vec2,
+    pub next_widget_placement: PerAxis<Placement>,
+
     /// generate triangle vertex & index buffers
     pub draw: DrawList,
 
@@ -844,6 +849,8 @@ pub struct State {
 
     pub cursor_icon: CursorIcon,
     pub cursor_icon_changed: bool,
+
+    pub prev_n_draw_calls: u32,
 
     pub draw_dbg_wireframe: bool,
     pub window: Arc<Window>,
@@ -870,6 +877,7 @@ impl State {
             cursor_icon: CursorIcon::Default,
             cursor_icon_changed: false,
             cursor: Vec2::ZERO,
+            next_widget_placement: PerAxis([Placement::Min; 2]),
             roots: Vec::new(),
             curr_widget_action: None,
             hot_id: WidgetId::NULL,
@@ -882,6 +890,7 @@ impl State {
             draw_order: Vec::new(),
             draw_dbg_wireframe: false,
             resize_threshold: 10.0,
+            prev_n_draw_calls: 0,
             window: window.into(),
         }
     }
@@ -892,6 +901,18 @@ impl State {
 
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
         self.mouse.set_mouse_pos(x, y)
+    }
+
+    pub fn set_next_placement_x(&mut self, p: Placement) {
+        self.next_widget_placement[Axis::X] = p;
+    }
+    pub fn set_next_placement_y(&mut self, p: Placement) {
+        self.next_widget_placement[Axis::Y] = p;
+    }
+
+    pub fn set_next_placement(&mut self, px: Placement, py: Placement) {
+        self.set_next_placement_x(px);
+        self.set_next_placement_y(py);
     }
 
     pub fn start_frame(&mut self) {
@@ -916,15 +937,31 @@ impl State {
         // );
     }
 
+    pub fn begin_window(&mut self) {
+        let size = self.window.inner_size();
+        let (id, _) = self.begin_widget(
+            "window",
+            WidgetOpt::new()
+                .fill(RGBA::INDIGO)
+                .size_px(size.width as f32, size.height as f32)
+                // .draggable()
+                .resizable()
+                .corner_radius(10.0));
+
+    }
+
+    pub fn end_window(&mut self) {
+        self.end_widget();
+    }
+
     pub fn debug_window(&mut self, dt: Duration) {
         self.begin_widget(
             "debug",
             WidgetOpt::new()
                 .fill(RGBA::INDIGO)
-                .size_min_fit()
+                .size_fit()
                 .draggable()
                 .padding(40.0)
-                .resizable()
                 .corner_radius(10.0)
                 .spacing(18.0)
                 .outline(RGBA::DARK_BLUE, 5.0),
@@ -938,7 +975,6 @@ impl State {
             WidgetOpt::new()
                 .text(&format!("dt: {dt:?}"), 32.0)
                 .size_text()
-                .fill(RGBA::BLACK),
         );
         self.end_widget();
 
@@ -947,7 +983,6 @@ impl State {
             WidgetOpt::new()
                 .text(&format!("hot: {}", self.hot_id), 32.0)
                 .size_text()
-                .fill(RGBA::BLACK),
         );
         self.end_widget();
 
@@ -956,7 +991,6 @@ impl State {
             WidgetOpt::new()
                 .text(&format!("active: {}", self.active_id), 32.0)
                 .size_text()
-                .fill(RGBA::BLACK),
         );
         self.end_widget();
 
@@ -967,13 +1001,24 @@ impl State {
                     &format!(
                         "action: {}",
                         self.curr_widget_action
-                            .map(|a| format!("{a:?}"))
+                            .map(|a| format!("{a}"))
                             .unwrap_or("".into())
                     ),
                     32.0,
                 )
                 .size_text()
-                .fill(RGBA::BLACK),
+        );
+        self.end_widget();
+
+        self.add_widget(
+            "n_draw_calls",
+            WidgetOpt::new()
+                .text(
+                    &format!(
+                        "n. of draw calls: {}", self.prev_n_draw_calls),
+                    32.0,
+                )
+                .size_text()
         );
         self.end_widget();
 
@@ -1156,12 +1201,12 @@ impl State {
     }
 
     pub fn update_hot_widget(&mut self) {
-        let id = self.hot_id;
-        if id.is_null() {
+        // let id = self.hot_id;
+        if self.hot_id.is_null() {
             return;
         }
 
-        let w = self.widgets.get(&id).unwrap();
+        let w = self.widgets.get(&self.hot_id).unwrap();
         let w_rect = w.rect;
         let flags = w.opt.flags;
 
@@ -1175,9 +1220,19 @@ impl State {
             return;
         }
 
-        // if mouse is pressed hot turns active
         if flags.clickable() && self.mouse.pressed(MouseBtn::Left) {
-            self.active_id = id;
+            // if mouse is pressed hot turns active
+            self.active_id = self.hot_id;
+        } else if self.mouse.pressed(MouseBtn::Left) {
+            // if mosue is presed but the current hot widget is not clickable search for topmost
+            // clickable widget under mouse and set it to active
+            for &id in self.draw_order.iter().rev() {
+                let w = &self[id];
+                if w.opt.flags.clickable() && w.point_over(self.mouse.pos, 0.0) {
+                    self.active_id = id;
+                    break
+                }
+            }
         }
 
         // TODO[BUG]: starting a drag and then crossing the outline should not result in resizing
@@ -1238,10 +1293,10 @@ impl State {
                 if self.mouse.pressed(MouseBtn::Left) {
                     self.curr_widget_action = Some(WidgetAction::Resize {
                         dir,
-                        id,
+                        id: self.hot_id,
                         prev_rect: w_rect,
                     });
-                    self.active_id = id;
+                    self.active_id = self.hot_id;
                 }
             }
         }
@@ -1313,12 +1368,13 @@ impl State {
                 let size = w.rect.size();
 
                 // NOTE: cancel action
-                // if self.mouse.pressed(MouseBtn::Right) {
-                //     w.rect = Rect::from_min_size(start_pos, size);
-                //     self.curr_widget_action = None;
-                //     self.active_id = WidgetId::NULL;
-                //     return
-                // }
+                if self.mouse.pressed(MouseBtn::Right) {
+                    w.rect = w.rect.translate(start_pos - w.rect.min);
+                    // disable action and selection
+                    self.curr_widget_action = None;
+                    self.active_id = WidgetId::NULL;
+                    return
+                }
                 let pos = start_pos + m_delta;
                 w.rect = Rect::from_min_size(pos, size);
             }
@@ -1379,27 +1435,28 @@ impl State {
             }
         }
 
-        if signal.mouse_over()
-            && self.mouse.pressed(MouseBtn::Left)
-            && !self.mouse.dragging(MouseBtn::Left)
-        {
-            // one should be able to drag the widget when mouse is over a child that is not
-            // clickable. bit hacky... 
-            //
-            assert!(!self.hot_id.is_null());
-            // if current hot is not clickable, allow fall through
-            if w.opt.flags.clickable() && (!self[self.hot_id].opt.flags.clickable()
-                // if active is null or not clickable
-                // if active is null or not clickable and current is over active 
-                || (self.active_id.is_null() || !self[self.active_id].opt.flags.clickable()))
-                && w.opt.flags.clickable()
-                // && self.is_id_over(id, self.active_id)
-            {
-                // log::info!("{id}");
-                // self.hot_id = id;
-                self.active_id = id;
-            }
-        }
+        // if signal.mouse_over()
+        //     && self.mouse.pressed(MouseBtn::Left)
+        //     && !self.mouse.dragging(MouseBtn::Left)
+        // {
+        //     // TODO[CHECK]
+        //     // one should be able to drag the widget when mouse is over a child that is not
+        //     // clickable. bit hacky... 
+        //     //
+        //     assert!(!self.hot_id.is_null());
+        //     // if current hot is not clickable, allow fall through
+        //     if w.opt.flags.clickable() && (!self[self.hot_id].opt.flags.clickable()
+        //         // if active is null or not clickable
+        //         // if active is null or not clickable and current is over active 
+        //         || (self.active_id.is_null() || !self[self.active_id].opt.flags.clickable()))
+        //         && w.opt.flags.clickable()
+        //         // && self.is_id_over(id, self.active_id)
+        //     {
+        //         // log::info!("{id}");
+        //         // self.hot_id = id;
+        //         self.active_id = id;
+        //     }
+        // }
 
         // if signal.mouse_over()
         //     && !self.mouse.dragging(MouseBtn::Left)
@@ -1611,14 +1668,25 @@ impl State {
             Vec2::new(x, y)
         };
 
+        let mut rect = Rect::from_min_size(self.cursor, widget_size);
+        let off_x = match self.next_widget_placement.x() {
+            Placement::Min => 0.0,
+            Placement::Center => - widget_size.x / 2.0,
+        };
+        let off_y = match self.next_widget_placement.y() {
+            Placement::Min => 0.0,
+            Placement::Center => - widget_size.y / 2.0,
+        };
+        rect = rect.translate(Vec2::new(off_x, off_y));
+
         // update existing or init
         if let Some(w) = self.widgets.get_mut(&id) {
-            w.rect = Rect::from_min_size(self.cursor, widget_size);
+            // w.rect = Rect::from_min_size(self.cursor, widget_size);
             w.opt = opt;
             w.text_size = text_size;
         } else {
             let mut w = Widget::new(id, opt);
-            w.rect = Rect::from_min_size(self.cursor, widget_size);
+            // w.rect = Rect::from_min_size(self.cursor, widget_size);
             w.text_size = text_size;
             w.frame_created = self.frame_count;
             self.widgets.insert(id, w);
@@ -1638,6 +1706,7 @@ impl State {
 
         let w = self.widgets.get_mut(&id).unwrap();
         w.last_frame_used = self.frame_count;
+        w.rect = rect;
 
         // clear non persistant data, e.g. children
         w.reset_frame_data();
@@ -1657,11 +1726,12 @@ impl State {
 
         self.id_stack.push(id);
         self.widget_stack.push(id);
+        self.next_widget_placement = PerAxis([Placement::Min; 2]);
 
         id
     }
 
-    pub fn end_widget(&mut self) {
+    pub fn end_widget(&mut self) -> WidgetId {
         // pop from stack
         self.id_stack.pop();
         let id = self
@@ -1731,8 +1801,11 @@ impl State {
                 Layout::Horizontal => self.cursor.x = rect.max.x + margin.right + p.opt.spacing,
             }
         }
+
+        id
     }
 
+    // TODO[BUG]: children padding is larger at the bottom
     fn measure_children(&self, w: &Widget) -> Vec2 {
         // TODO[NOTE]: maybe just use bounds?
         let mut total_size = Vec2::ZERO;
@@ -1759,30 +1832,10 @@ impl State {
             };
 
             result[axis as usize] =
-                content_size + margins[axis as usize] + w.opt.padding.sum_along_axis(axis) * 2.0;
+                content_size + margins[axis as usize] + w.opt.padding.sum_along_axis(axis);
         }
 
         result
-    }
-
-    fn sum_children_sizes_along_axis(&self, w: &Widget, axis: Axis) -> f32 {
-        let children: Vec<_> = self.iter_children(w.id).collect();
-        let sizes = children.iter().map(|w| w.rect.size()[axis as usize]);
-        let margins: f32 = children
-            .iter()
-            .map(|w| w.opt.margin.sum_along_axis(axis))
-            .sum();
-
-        let mut content_size = if w.opt.layout.axis() == axis {
-            sizes.sum::<f32>() + (w.n_children.max(1) - 1) as f32 * w.opt.spacing
-        } else {
-            sizes.fold(0.0, f32::max)
-        };
-        let size = content_size
-            + margins
-            + w.opt.padding.sum_along_axis(axis)
-            + w.opt.padding.sum_along_axis(axis);
-        size
     }
 
     fn build_draw_data(&mut self) {
@@ -1794,6 +1847,9 @@ impl State {
         if self.draw_dbg_wireframe {
             self.draw.debug_wireframe(2.0);
         }
+
+        self.prev_n_draw_calls = self.draw.vtx_idx_buffer.chunks.len() as u32;
+
     }
 
     pub fn mouse_draggin_outside(&self, m: MouseBtn) -> bool {
@@ -2525,6 +2581,7 @@ pub struct DrawList {
     pub text_cache: TextCache,
     pub text_cache_2: TextCache,
 
+
     pub wgpu: WGPUHandle,
 }
 
@@ -2569,7 +2626,7 @@ impl DrawList {
             screen_size: Vec2::ONE,
             path: Vec::new(),
             path_closed: false,
-            resolution: 8.0,
+            resolution: 20.0,
             vtx_idx_buffer: DrawChunks::new(
                 Self::MAX_VERTEX_COUNT as usize,
                 Self::MAX_INDEX_COUNT as usize,
@@ -2582,6 +2639,7 @@ impl DrawList {
             white_texture: gpu::Texture::create(&*wgpu, 1, 1, &RGBA::INDIGO.as_bytes()),
             text_cache: TextCache::new(),
             text_cache_2: TextCache::new(),
+
             wgpu,
         }
     }
@@ -3279,3 +3337,4 @@ impl DrawChunks {
         self.idx_ptr += idx.len();
     }
 }
+

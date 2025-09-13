@@ -191,6 +191,8 @@ impl RGBA {
     pub const SAFFRON: RGBA = RGBA::hex("#F2C447");
     pub const INDIGO: RGBA = RGBA::hex("#214675");
     pub const DARK_BLUE: RGBA = RGBA::hex("#122741");
+    pub const CYAN: RGBA = RGBA::hex("#00f7f7");
+    pub const TEAL: RGBA = RGBA::hex("#007c7c");
 
     pub const WHITE: RGBA = RGBA::rgb(255, 255, 255);
     pub const BLACK: RGBA = RGBA::rgb(0, 0, 0);

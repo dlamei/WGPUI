@@ -64,6 +64,7 @@ impl AppSetup {
             .create_window(
                 winit::window::Window::default_attributes()
                     .with_title("Atlas")
+                    // .with_decorations(false)
                     .with_window_icon(Some(load_window_icon())),
             )
             .unwrap();
@@ -300,11 +301,15 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-        self.ui.start_frame();
+        let ui = &mut self.ui;
+
+        ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        ui.start_frame();
+
+        // ui.begin_window();
 
         for i in 0..10 {
-            self.ui.begin_widget(
+            ui.begin_widget(
                 &format!("outer_{}", i + 1),
                 WidgetOpt::new()
                     .draggable()
@@ -315,10 +320,10 @@ impl App {
                     .size_fit(),
             );
 
-            self.ui.add_label(&format!("window: {}", i + 1), 64.0);
-            self.ui.offset_cursor_y(24.0);
+            ui.add_label(&format!("window: {}", i + 1), 64.0);
+            ui.offset_cursor_y(24.0);
 
-            self.ui.begin_widget(
+            ui.begin_widget(
                 "content",
                 WidgetOpt::new()
                     .fill(RGBA::INDIGO)
@@ -333,32 +338,32 @@ impl App {
 
             static mut toggle: bool = false;
 
-            if self.ui.add_button("hello") {
+            if ui.add_button("hello") {
                 unsafe {
                     toggle = !toggle;
                 }
             }
 
             if unsafe { toggle } {
-                self.ui.begin_widget(
+                ui.begin_widget(
                     "toggle_rect",
                     WidgetOpt::new()
                         .fill(RGBA::PASTEL_MINT)
                         .padding(100.0)
                         .size_px(200.0, 200.0),
                 );
-                self.ui.end_widget();
+                ui.end_widget();
             }
 
-            if self.ui.add_button("test") {
+            if ui.add_button("test") {
                 log::info!("test");
             }
 
-            if self.ui.add_button("abcdefghijklmnopqrstuvwxyz") {
+            if ui.add_button("abcdefghijklmnopqrstuvwxyz") {
                 log::info!("abcdefghijklmnopqrstuvwxyz");
             }
 
-            let (id, _) = self.ui.begin_widget(
+            let (id, _) = ui.begin_widget(
                 "box 2",
                 WidgetOpt::new()
                     .fill(RGBA::CARMINE)
@@ -369,7 +374,7 @@ impl App {
                     .size_fit(),
             );
 
-            let (_, signal) = self.ui.begin_widget(
+            let (_, signal) = ui.begin_widget(
                 "green circle",
                 WidgetOpt::new()
                     .fill(RGBA::GREEN)
@@ -382,32 +387,36 @@ impl App {
                 log::info!("inner rect released");
             }
 
-            self.ui.end_widget();
+            ui.end_widget();
 
-            let offset = self.ui[id].rect.height() / 2.0;
-            self.ui.offset_cursor_y(offset - 32.0);
+            let offset = ui[id].rect.height() / 2.0;
+            ui.offset_cursor_y(offset);
+            ui.set_next_placement_y(ui::Placement::Center);
+            // ui.set_next_widget_placement(ui::WidgetPlacement::Center);
 
-            if self.ui.add_button("hello world") {
+            if ui.add_button("hello world") {
                 log::info!("hello world");
             }
 
-            self.ui.end_widget();
-            self.ui.end_widget();
-            self.ui.end_widget();
+            ui.end_widget();
+
+
+            ui.end_widget();
+            ui.end_widget();
         }
 
-        self.ui.debug_window(self.delta_time);
+        ui.debug_window(self.delta_time);
 
-        self.ui.draw_dbg_wireframe = self.dbg_wireframe;
-        self.ui.end_frame();
+        ui.draw_dbg_wireframe = self.dbg_wireframe;
+
+        // ui.end_window();
+
+        ui.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
         use winit::keyboard::{KeyCode, PhysicalKey};
         match event.physical_key {
-            PhysicalKey::Code(KeyCode::Escape) => {
-                event_loop.exit();
-            }
             PhysicalKey::Code(KeyCode::KeyD) => {
                 if event.state.is_pressed() {
                     self.dbg_wireframe = !self.dbg_wireframe;
