@@ -10,7 +10,7 @@ use winit::{
 };
 
 use crate::{
-    gpu::{WGPUHandle, Window, WGPU}, mouse::MouseBtn, ui::{self, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
+    gpu::{WGPUHandle, Window, WindowId, WGPU}, mouse::MouseBtn, ui::{self, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
 };
 
 pub enum AppSetup {
@@ -92,7 +92,6 @@ impl AppSetup {
             .unwrap();
         let canvas_width = canvas.width().max(1);
         let canvas_height = canvas.height().max(1);
-        // self.last_size = (canvas_width, canvas_height).into();
         attributes = attributes.with_canvas(Some(canvas));
 
         if let Ok(new_window) = event_loop.create_window(attributes) {
@@ -188,6 +187,16 @@ impl ApplicationHandler for AppSetup {
     }
 }
 
+macro_rules! get_mut_window {
+    ($app:ident, $id:ident) => {
+        if $app.window.id == $id {
+            &mut $app.window
+        } else {
+            $app.windows.iter_mut().find(|w| w.id == $id).unwrap()
+        }
+    }
+}
+
 pub struct App {
     ui: ui::State,
 
@@ -198,9 +207,9 @@ pub struct App {
 
     mouse_pos: Vec2,
 
-    last_size: UVec2,
     wgpu: WGPUHandle,
     window: Window,
+    windows: Vec<Window>,
 }
 
 impl App {
@@ -212,9 +221,17 @@ impl App {
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
-            last_size: UVec2::ONE,
             wgpu,
             window: main_window,
+            windows: vec![],
+        }
+    }
+
+    fn get_window(&self, id: WindowId) -> &Window {
+        if self.window.id == id {
+            &self.window
+        } else {
+            self.windows.iter().find(|w| w.id == id).unwrap()
         }
     }
 
@@ -222,7 +239,7 @@ impl App {
     fn on_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        id: WindowId,
         event: WindowEvent,
     ) {
         use WindowEvent as WE;
@@ -255,17 +272,18 @@ impl App {
                 }
             }
             WE::RedrawRequested => {
-                self.on_update();
-                self.on_redraw(event_loop);
+                if id == self.window.id {
+                    self.on_update();
+                }
+                self.on_redraw(event_loop, id);
             }
             WE::KeyboardInput { event, .. } => {
                 self.on_keyboard(&event, event_loop);
             }
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
-                self.last_size = (width, height).into();
-                self.window.resize(width, height, &self.wgpu.device);
-                // self.resize(width, height);
+
+                get_mut_window!(self, id).resize(width, height, &self.wgpu.device);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
@@ -392,28 +410,30 @@ impl App {
                 }
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
-                // if self.windows.len() < 3 {
-                //     let window = event_loop
-                //         .create_window(WinitWindow::default_attributes())
-                //         .unwrap();
-                //     self.windows.push(Arc::new(window))
-                // }
-                // let shader = ColorTint(RGBA::rand());
-                // shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
+                if self.windows.len() < 3 {
+                    let window = event_loop
+                        .create_window(WinitWindow::default_attributes())
+                        .unwrap();
+                    let size = window.inner_size();
+                    let window = Window::new(window, size.width, size.height, &self.wgpu);
+                    self.windows.push(window)
+                }
             }
             _ => (),
         }
     }
 
-    fn on_redraw(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         let prev_time = self.prev_frame_time;
         let curr_time = Instant::now();
         let dt = curr_time - prev_time;
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
 
+        let window = get_mut_window!(self, id);
+
         {
-            let Some(mut target) = self.window.prepare_frame(&self.wgpu) else {
+            let Some(mut target) = window.prepare_frame(&self.wgpu) else {
                 return
             };
 
@@ -421,8 +441,8 @@ impl App {
             target.render(&self.ui.draw);
         }
 
-        self.window.present_frame();
-        self.window.request_redraw();
+        window.present_frame();
+        window.request_redraw();
     }
 
     fn resize_main_window(&mut self, w: u32, h: u32) {

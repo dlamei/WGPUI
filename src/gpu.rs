@@ -414,28 +414,17 @@ pub type WGPUHandle = Arc<WGPU>;
 
 pub struct WGPU {
     pub pipeline_cache: Mutex<ResourceCache<UUID, wgpu::RenderPipeline>>,
-    // pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    // pub surface_config: RefCell<wgpu::SurfaceConfiguration>,
+    pub instance: wgpu::Instance,
     pub surface_format: wgpu::TextureFormat,
+    pub alpha_mode: wgpu::CompositeAlphaMode,
+    pub backends: wgpu::Backends,
+    pub present_mode: wgpu::PresentMode,
 }
 
 impl WGPU {
 
-    pub fn instance() -> wgpu::Instance {
-        wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            #[cfg(any(target_os = "linux"))]
-            backends: wgpu::Backends::PRIMARY,
-            #[cfg(target_os = "macos")]
-            backends: wgpu::Backends::METAL,
-            #[cfg(target_os = "windows")]
-            backends: wgpu::Backends::DX12 | wgpu::Backends::GL,
-            #[cfg(target_arch = "wasm32")]
-            backends: wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU,
-            ..Default::default()
-        })
-    }
 
     /// Register a new render pipeline with the given ID
     pub fn register_pipeline(&self, id: UUID, pipeline: wgpu::RenderPipeline) {
@@ -466,7 +455,25 @@ impl WGPU {
         height: u32,
     ) -> (Self, Window) {
         let window = Box::new(window);
-        let instance = Self::instance();
+
+        let backends = if cfg!(target_os = "linux") {
+            wgpu::Backends::PRIMARY
+        } else if cfg!(target_os = "macos") {
+            wgpu::Backends::METAL
+        } else if cfg!(target_os = "windows") {
+            wgpu::Backends::DX12 | wgpu::Backends::GL
+        } else if cfg!(target_arch = "wasm32") {
+            wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            wgpu::Backends::all()
+        };
+
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends,
+            ..Default::default()
+        });
+
         let (window, surface) = unsafe { create_static_surface_with_window(window, &instance) };
         // let surface = instance.create_surface(window).unwrap();
 
@@ -478,6 +485,7 @@ impl WGPU {
             })
             .await
             .expect("Failed to request adapter!");
+
 
         let (device, queue) = {
             log::info!("WGPU Adapter Features: {:#?}", adapter.features());
@@ -513,16 +521,20 @@ impl WGPU {
             .find(|f| !f.is_srgb())
             .unwrap_or(surface_capabilities.formats[0]);
 
+        let alpha_mode = surface_capabilities.alpha_modes[0];
+        let present_mode = if cfg!(target_arch = "wasm32") {
+            wgpu::PresentMode::Fifo
+        } else {
+            wgpu::PresentMode::Immediate
+        };
+
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
             height,
-            #[cfg(target_arch = "wasm32")]
-            present_mode: wgpu::PresentMode::Fifo,
-            #[cfg(not(target_arch = "wasm32"))]
-            present_mode: wgpu::PresentMode::Immediate,
-            alpha_mode: surface_capabilities.alpha_modes[0],
+            present_mode,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -533,10 +545,12 @@ impl WGPU {
 
         (Self {
             pipeline_cache: Mutex::new(ResourceCache::new()),
-            // surface,
             device,
             queue,
-            // surface_config: RefCell::new(surface_config),
+            instance,
+            alpha_mode,
+            backends,
+            present_mode,
             surface_format,
         }, window)
     }
@@ -1126,29 +1140,27 @@ impl Window {
 
     pub fn new(
         raw_window: winit::window::Window,
-        opt: WindowOpt,
         width: u32,
         height: u32,
-        instance: &wgpu::Instance,
-        device: &wgpu::Device,
+        wgpu: &WGPU,
     ) -> Self {
         // SAFETY: create_static_surface_with_window handles the unsafe lifetime extension
         // The returned Window struct must ensure Surface is dropped before the window
         let (raw, surface) =
-            unsafe { create_static_surface_with_window(raw_window.into(), instance) };
+            unsafe { create_static_surface_with_window(raw_window.into(), &wgpu.instance) };
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: opt.surface_format,
+            format: wgpu.surface_format,
             width,
             height,
-            present_mode: opt.present_mode,
-            alpha_mode: opt.alpha_mode,
+            present_mode: wgpu.present_mode,
+            alpha_mode: wgpu.alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
 
-        surface.configure(device, &surface_config);
+        surface.configure(&wgpu.device, &surface_config);
 
         Self {
             id: raw.id(),
