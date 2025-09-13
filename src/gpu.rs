@@ -445,8 +445,8 @@ impl Renderer {
         RenderTarget {
             target_view: self.framebuffer_msaa.clone().unwrap(),
             resolve_view: Some(surface_texture_view),
-            encoder: std::mem::ManuallyDrop::new(encoder),
             wgpu: &self.wgpu,
+            encoder: EncoderHandle::new(&self.wgpu.device, &self.wgpu.queue, "render_pass_encoder"),
         }
     }
 
@@ -482,14 +482,24 @@ impl Renderer {
             RenderTarget {
                 target_view: self.framebuffer_msaa.clone().unwrap(),
                 resolve_view: Some(surface_texture_view),
-                encoder: std::mem::ManuallyDrop::new(encoder),
+                // encoder: std::mem::ManuallyDrop::new(encoder),
+                encoder: EncoderHandle::new(
+                    &self.wgpu.device,
+                    &self.wgpu.queue,
+                    "render_pass_encoder",
+                ),
                 wgpu: &self.wgpu,
             }
         } else {
             RenderTarget {
                 target_view: surface_texture_view,
                 resolve_view: None,
-                encoder: std::mem::ManuallyDrop::new(encoder),
+                // encoder: std::mem::ManuallyDrop::new(encoder),
+                encoder: EncoderHandle::new(
+                    &self.wgpu.device,
+                    &self.wgpu.queue,
+                    "render_pass_encoder",
+                ),
                 wgpu: &self.wgpu,
             }
         }
@@ -1197,52 +1207,128 @@ pub trait RenderPassHandle {
     fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {}
 }
 
+#[derive(Debug, Default)]
+pub enum EncoderState {
+    #[default]
+    Empty,
+    Recording(wgpu::CommandEncoder),
+}
+
+impl EncoderState {
+    pub fn encoder_mut(&mut self) -> Option<&mut wgpu::CommandEncoder> {
+        if let Self::Recording(ce) = self {
+            Some(ce)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        matches!(self, Self::Recording(_))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    pub fn take_encoder(&mut self) -> Option<wgpu::CommandEncoder> {
+        let state = std::mem::take(self);
+        if let Self::Recording(ce) = state {
+            Some(ce)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EncoderHandle<'a> {
+    pub inner: Arc<Mutex<EncoderState>>,
+    pub queue: &'a wgpu::Queue,
+    pub device: &'a wgpu::Device,
+    pub label: &'a str,
+}
+
+impl<'a> EncoderHandle<'a> {
+    pub fn new(device: &'a wgpu::Device, queue: &'a wgpu::Queue, label: &'a str) -> Self {
+        let encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+
+        Self {
+            inner: Arc::new(Mutex::new(EncoderState::Recording(encoder))),
+            queue,
+            device,
+            label,
+        }
+    }
+
+    pub fn is_submitted(&self) -> bool {
+        self.inner.lock().unwrap().is_empty()
+    }
+
+    /// Get mutable access to the encoder for recording commands
+    pub fn with_encoder<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder) -> R,
+    {
+        let mut state = self.inner.lock().unwrap();
+        let encoder = state.encoder_mut().expect("Encoder already submitted");
+        f(encoder)
+    }
+
+    /// Submit the current encoder and create a new one
+    pub fn submit_and_continue(&self) {
+        let mut state = self.inner.lock().unwrap();
+        if let Some(encoder) = state.take_encoder() {
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            // Create a new encoder for continued use
+            *state = EncoderState::Recording(self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
+                    label: Some(self.label),
+                },
+            ));
+        }
+    }
+
+    /// Submit and consume the encoder (for final submission)
+    pub fn submit(&mut self) {
+        if self.is_submitted() {
+            log::warn!("Attempting to submit already submitted encoder: {}", self.label);
+            return;
+        }
+
+        let mut state = self.inner.lock().unwrap();
+        if let Some(encoder) = state.take_encoder() {
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+    }
+}
+
 pub struct RenderTarget<'a> {
-    target_view: wgpu::TextureView,
-    resolve_view: Option<wgpu::TextureView>,
-    encoder: std::mem::ManuallyDrop<wgpu::CommandEncoder>,
-    wgpu: &'a WGPU,
+    pub target_view: wgpu::TextureView,
+    pub resolve_view: Option<wgpu::TextureView>,
+    pub encoder: EncoderHandle<'a>,
+    pub wgpu: &'a WGPU,
 }
 
 impl<'a> Drop for RenderTarget<'a> {
     fn drop(&mut self) {
-        unsafe {
-            let encoder = std::mem::ManuallyDrop::take(&mut self.encoder);
-            self.wgpu.queue.submit(Some(encoder.finish()));
+        if !self.encoder.is_submitted() {
+            self.encoder.submit();
         }
     }
 }
 
 impl<'a> RenderTarget<'a> {
-    pub fn render<RH: RenderPassHandle>(&mut self, rh: &RH) {
+    pub fn render<RH: RenderPassHandle>(&mut self, rh: &'a RH) {
         let n_passes = rh.n_render_passes();
 
         if n_passes == 1 {
             log::trace!("[RENDERPASS] {}", RH::LABEL);
-            let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.target_view,
-                    resolve_target: self.resolve_view.as_ref(),
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: rh.load_op(),
-                        store: rh.store_op(),
-                    },
-                })],
-                depth_stencil_attachment: None,
-                label: Some("main render pass"),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
 
-            rh.draw(&mut rpass, self.wgpu);
-            return;
-        }
-
-        log::trace!("[RENDERPASS] {} x {n_passes}", RH::LABEL);
-        for i in 0..n_passes {
-            {
-                let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            self.encoder.with_encoder(|encoder| {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &self.target_view,
                         resolve_target: self.resolve_view.as_ref(),
@@ -1257,23 +1343,377 @@ impl<'a> RenderTarget<'a> {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                rh.draw(&mut rpass, self.wgpu);
+            });
 
-                rh.draw_multiple(&mut rpass, self.wgpu, i);
+            return;
+        }
+
+        log::trace!("[RENDERPASS] {} x {n_passes}", RH::LABEL);
+        for i in 0..n_passes {
+            {
+                self.encoder.with_encoder(|encoder| {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.target_view,
+                            resolve_target: self.resolve_view.as_ref(),
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: rh.load_op(),
+                                store: rh.store_op(),
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        label: Some("main render pass"),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    rh.draw_multiple(&mut rpass, self.wgpu, i);
+                });
             }
 
-            let mut old_encoder =
-                std::mem::ManuallyDrop::new(self.wgpu.device.create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor {
-                        label: Some(&format!("renderpass_encoder x {i}")),
-                    },
-                ));
-
-            std::mem::swap(&mut old_encoder, &mut self.encoder);
-
-            unsafe {
-                let encoder = std::mem::ManuallyDrop::take(&mut old_encoder);
-                self.wgpu.queue.submit(Some(encoder.finish()));
+            if i < n_passes - 1 {
+                self.encoder.submit_and_continue();
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WindowOpt {
+    pub surface_format: wgpu::TextureFormat,
+    pub alpha_mode: wgpu::CompositeAlphaMode,
+    pub backend: wgpu::Backends,
+    pub present_mode: wgpu::PresentMode,
+}
+
+pub type WindowId = winit::window::WindowId;
+
+pub struct Window {
+    pub id: WindowId,
+    pub surface: wgpu::Surface<'static>,
+    pub surface_config: wgpu::SurfaceConfiguration,
+    // TODO: framebuffer, depthtexture etc...
+    pub current_surface_texture: Option<wgpu::SurfaceTexture>,
+
+    // keep as last field, so its dropped after all the others
+    pub raw: Box<winit::window::Window>,
+}
+
+/// create a surface with a static lifetime of the given window
+///
+/// the caller must ensure that the window outlives the surface
+unsafe fn create_static_surface_with_window(
+    window: Box<winit::window::Window>,
+    instance: &wgpu::Instance,
+) -> (Box<winit::window::Window>, wgpu::Surface<'static>) {
+    let raw_ptr = Box::into_raw(window);
+
+    let surface: wgpu::Surface<'static> = unsafe {
+        let static_window_ref: &'static winit::window::Window = &*raw_ptr;
+        instance.create_surface(&*static_window_ref).unwrap()
+    };
+
+    let window = unsafe { Box::from_raw(raw_ptr) };
+    (window, surface)
+}
+
+impl Window {
+    pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
+        self.surface_config.width = width.max(1);
+        self.surface_config.height = height.max(1);
+        self.surface.configure(device, &self.surface_config);
+    }
+
+    pub fn from_surface(
+        raw: Box<winit::window::Window>,
+        surface: wgpu::Surface<'static>,
+        surface_config: wgpu::SurfaceConfiguration,
+    ) -> Self {
+        let id = raw.id();
+        Self {
+            id,
+            surface,
+            surface_config,
+            current_surface_texture: None,
+            raw,
+        }
+    }
+
+    pub fn new(
+        raw_window: winit::window::Window,
+        opt: WindowOpt,
+        width: u32,
+        height: u32,
+        instance: &wgpu::Instance,
+        device: &wgpu::Device,
+    ) -> Self {
+        // SAFETY: create_static_surface_with_window handles the unsafe lifetime extension
+        // The returned Window struct must ensure Surface is dropped before the window
+        let (raw, surface) =
+            unsafe { create_static_surface_with_window(raw_window.into(), instance) };
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: opt.surface_format,
+            width,
+            height,
+            present_mode: opt.present_mode,
+            alpha_mode: opt.alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+
+        surface.configure(device, &surface_config);
+
+        Self {
+            id: raw.id(),
+            surface,
+            surface_config,
+            current_surface_texture: None,
+            raw,
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.surface_config.width
+    }
+    pub fn height(&self) -> u32 {
+        self.surface_config.height
+    }
+
+    pub fn aspect_ratio(&self) -> f32 {
+        self.width() as f32 / self.height() as f32
+    }
+
+    pub fn reconfigure(&mut self, device: &wgpu::Device) {
+        let size = self.raw.inner_size();
+        self.resize(size.width, size.height, device)
+    }
+
+    /// returns false when unable to accquire the current surface texture
+    ///
+    pub fn prepare_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Option<RenderTarget<'_>> {
+        if self.current_surface_texture.is_some() {
+            log::error!("Renderer::prepare_frame called with active surface!");
+            panic!();
+        }
+
+        let surface_texture = match self.surface.get_current_texture() {
+            Ok(st) => st,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.reconfigure(device);
+                return None;
+            }
+            Err(e) => {
+                log::error!("surface_texture: {e}");
+                panic!();
+            }
+        };
+
+        let surface_texture_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.current_surface_texture = Some(surface_texture);
+
+        Some(RenderTarget {
+            target_view: surface_texture_view,
+            resolve_view: None,
+            // encoder: EncoderHandle::new(device, queue),
+            encoder: todo!(),
+            wgpu: todo!(),
+        })
+    }
+
+    pub fn present_frame(&mut self) {
+        let surface_texture = self
+            .current_surface_texture
+            .take()
+            .expect("prepare_frame must be called before present_frame");
+        surface_texture.present();
+    }
+
+    pub fn request_redraw(&self) {
+        self.raw.request_redraw();
+    }
+
+    // pub fn get_surface_texture(&self) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView), wgpu::SurfaceError> {
+    //     let surface_texture = self.surface.get_current_texture()?;
+    //     let view = surface_texture
+    //         .texture
+    //         .create_view(&wgpu::TextureViewDescriptor::default());
+    //     Ok((surface_texture, view))
+    // }
+}
+
+pub type CtxHandle = Arc<Ctx>;
+
+pub struct Ctx {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
+
+    pub pipeline_cache: RefCell<ResourceCache<UUID, wgpu::RenderPipeline>>,
+
+    pub main_window: Window,
+    pub sub_windows: HashMap<WindowId, Window>,
+    pub window_opt: WindowOpt,
+}
+
+impl Ctx {
+    pub async fn new_async(raw_window: winit::window::Window, width: u32, height: u32) -> Self {
+        let backend = if cfg!(target_os = "linux") {
+            wgpu::Backends::PRIMARY
+        } else if cfg!(target_os = "macos") {
+            wgpu::Backends::METAL
+        } else if cfg!(target_os = "windows") {
+            wgpu::Backends::DX12 | wgpu::Backends::GL
+        } else if cfg!(target_arch = "wasm32") {
+            wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            wgpu::Backends::all()
+        };
+
+        let present_mode = if cfg!(target_arch = "wasm32") {
+            wgpu::PresentMode::Fifo
+        } else {
+            wgpu::PresentMode::Immediate
+        };
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: backend,
+            ..Default::default()
+        });
+
+        let (raw, surface) =
+            unsafe { create_static_surface_with_window(raw_window.into(), &instance) };
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("Failed to request adapter!");
+
+        let (device, queue) = {
+            log::info!("WGPU Adapter Features: {:#?}", adapter.features());
+            adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("WGPU Device"),
+                    memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    required_features: wgpu::Features::POLYGON_MODE_LINE,
+                    #[cfg(target_arch = "wasm32")]
+                    required_features: wgpu::Features::default(),
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+                    #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+                    #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
+                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                        .using_resolution(adapter.limits()),
+                })
+                .await
+                .expect("Failed to request a device!")
+        };
+
+        let surface_capabilities = surface.get_capabilities(&adapter);
+
+        let surface_format = surface_capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|f| !f.is_srgb())
+            .unwrap_or(surface_capabilities.formats[0]);
+
+        let alpha_mode = surface_capabilities.alpha_modes[0];
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width,
+            height,
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &surface_config);
+
+        let window_opt = WindowOpt {
+            surface_format,
+            alpha_mode,
+            backend,
+            present_mode,
+        };
+
+        Self {
+            pipeline_cache: RefCell::new(ResourceCache::new()),
+            device,
+            queue,
+            instance,
+            adapter,
+            main_window: Window::from_surface(raw, surface, surface_config),
+            sub_windows: HashMap::new(),
+            window_opt,
+        }
+    }
+
+    /// Get or create a pipeline
+    pub fn get_or_init_pipeline<F>(&self, id: UUID, load: F) -> Arc<wgpu::RenderPipeline>
+    where
+        F: FnOnce() -> wgpu::RenderPipeline,
+    {
+        self.pipeline_cache
+            .borrow_mut()
+            .get_or_insert_with(id, load)
+            .clone()
+    }
+
+    /// Register a new render pipeline with the given ID
+    pub fn register_pipeline(&self, id: UUID, pipeline: wgpu::RenderPipeline) {
+        self.pipeline_cache.borrow_mut().register(id, pipeline);
+    }
+
+    /// Get a registered pipeline by ID
+    pub fn get_pipeline(&self, id: UUID) -> Option<Arc<wgpu::RenderPipeline>> {
+        self.pipeline_cache.borrow_mut().get(id)
+    }
+
+    pub fn get_window(&self, id: WindowId) -> &Window {
+        if id == self.main_window.id {
+            return &self.main_window;
+        }
+        self.sub_windows.get(&id).unwrap()
+    }
+
+    pub fn get_mut_window(&mut self, id: WindowId) -> &mut Window {
+        if id == self.main_window.id {
+            return &mut self.main_window;
+        }
+        self.sub_windows.get_mut(&id).unwrap()
+    }
+
+    pub fn add_window(&mut self, window: winit::window::Window, width: u32, height: u32) {
+        let window = Window::new(
+            window,
+            self.window_opt,
+            width,
+            height,
+            &self.instance,
+            &self.device,
+        );
+        self.sub_windows.insert(window.id, window);
+    }
+
+    pub fn remove_window(&mut self, id: WindowId) {
+        self.sub_windows.remove(&id);
     }
 }

@@ -803,7 +803,9 @@ pub enum WidgetAction {
 impl fmt::Display for WidgetAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WidgetAction::Resize { dir, id, prev_rect } => write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}"),
+            WidgetAction::Resize { dir, id, prev_rect } => {
+                write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}")
+            }
             WidgetAction::Move { start_pos, id } => write!(f, "MOVE {{ {id}, {start_pos} }}"),
         }
     }
@@ -944,14 +946,21 @@ impl State {
             WidgetOpt::new()
                 .fill(RGBA::INDIGO)
                 .size_px(size.width as f32, size.height as f32)
-                // .draggable()
+                .draggable()
                 .resizable()
-                .corner_radius(10.0));
+                .corner_radius(10.0),
+        );
 
+        let rect = self[id].rect;
+        let width = rect.width();
+        let height = rect.height();
+        self.window
+            .request_inner_size(winit::dpi::PhysicalSize::new(width as u32, height as u32));
+        self.end_widget();
     }
 
     pub fn end_window(&mut self) {
-        self.end_widget();
+        // self.end_widget();
     }
 
     pub fn debug_window(&mut self, dt: Duration) {
@@ -974,7 +983,7 @@ impl State {
             "dt",
             WidgetOpt::new()
                 .text(&format!("dt: {dt:?}"), 32.0)
-                .size_text()
+                .size_text(),
         );
         self.end_widget();
 
@@ -982,7 +991,7 @@ impl State {
             "hot",
             WidgetOpt::new()
                 .text(&format!("hot: {}", self.hot_id), 32.0)
-                .size_text()
+                .size_text(),
         );
         self.end_widget();
 
@@ -990,7 +999,7 @@ impl State {
             "active",
             WidgetOpt::new()
                 .text(&format!("active: {}", self.active_id), 32.0)
-                .size_text()
+                .size_text(),
         );
         self.end_widget();
 
@@ -1006,7 +1015,7 @@ impl State {
                     ),
                     32.0,
                 )
-                .size_text()
+                .size_text(),
         );
         self.end_widget();
 
@@ -1014,11 +1023,10 @@ impl State {
             "n_draw_calls",
             WidgetOpt::new()
                 .text(
-                    &format!(
-                        "n. of draw calls: {}", self.prev_n_draw_calls),
+                    &format!("n. of draw calls: {}", self.prev_n_draw_calls),
                     32.0,
                 )
-                .size_text()
+                .size_text(),
         );
         self.end_widget();
 
@@ -1230,7 +1238,7 @@ impl State {
                 let w = &self[id];
                 if w.opt.flags.clickable() && w.point_over(self.mouse.pos, 0.0) {
                     self.active_id = id;
-                    break
+                    break;
                 }
             }
         }
@@ -1373,7 +1381,7 @@ impl State {
                     // disable action and selection
                     self.curr_widget_action = None;
                     self.active_id = WidgetId::NULL;
-                    return
+                    return;
                 }
                 let pos = start_pos + m_delta;
                 w.rect = Rect::from_min_size(pos, size);
@@ -1441,13 +1449,13 @@ impl State {
         // {
         //     // TODO[CHECK]
         //     // one should be able to drag the widget when mouse is over a child that is not
-        //     // clickable. bit hacky... 
+        //     // clickable. bit hacky...
         //     //
         //     assert!(!self.hot_id.is_null());
         //     // if current hot is not clickable, allow fall through
         //     if w.opt.flags.clickable() && (!self[self.hot_id].opt.flags.clickable()
         //         // if active is null or not clickable
-        //         // if active is null or not clickable and current is over active 
+        //         // if active is null or not clickable and current is over active
         //         || (self.active_id.is_null() || !self[self.active_id].opt.flags.clickable()))
         //         && w.opt.flags.clickable()
         //         // && self.is_id_over(id, self.active_id)
@@ -1671,11 +1679,11 @@ impl State {
         let mut rect = Rect::from_min_size(self.cursor, widget_size);
         let off_x = match self.next_widget_placement.x() {
             Placement::Min => 0.0,
-            Placement::Center => - widget_size.x / 2.0,
+            Placement::Center => -widget_size.x / 2.0,
         };
         let off_y = match self.next_widget_placement.y() {
             Placement::Min => 0.0,
-            Placement::Center => - widget_size.y / 2.0,
+            Placement::Center => -widget_size.y / 2.0,
         };
         rect = rect.translate(Vec2::new(off_x, off_y));
 
@@ -1849,7 +1857,6 @@ impl State {
         }
 
         self.prev_n_draw_calls = self.draw.vtx_idx_buffer.chunks.len() as u32;
-
     }
 
     pub fn mouse_draggin_outside(&self, m: MouseBtn) -> bool {
@@ -2580,7 +2587,6 @@ pub struct DrawList {
     pub white_texture: gpu::Texture,
     pub text_cache: TextCache,
     pub text_cache_2: TextCache,
-
 
     pub wgpu: WGPUHandle,
 }
@@ -3337,4 +3343,3 @@ impl DrawChunks {
         self.idx_ptr += idx.len();
     }
 }
-

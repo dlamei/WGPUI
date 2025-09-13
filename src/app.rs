@@ -6,7 +6,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{KeyEvent, WindowEvent},
     event_loop::ActiveEventLoop,
-    window::Window,
+    window::Window as WinitWindow,
 };
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
 
 pub enum AppSetup {
     UnInit {
-        window: Option<Arc<Window>>,
+        window: Option<Arc<WinitWindow>>,
         #[cfg(target_arch = "wasm32")]
         renderer_rec: Option<futures::channel::oneshot::Receiver<Renderer>>,
     },
@@ -49,7 +49,7 @@ impl AppSetup {
         matches!(self, Self::Init(_))
     }
 
-    pub fn init_app(window: Arc<Window>, renderer: Renderer) -> App {
+    pub fn init_app(window: Arc<WinitWindow>, renderer: Renderer) -> App {
         // let scale_factor = window.scale_factor() as f32;
         App::new(renderer, window)
     }
@@ -62,7 +62,7 @@ impl AppSetup {
 
         let window = event_loop
             .create_window(
-                winit::window::Window::default_attributes()
+                WinitWindow::default_attributes()
                     .with_title("Atlas")
                     // .with_decorations(false)
                     .with_window_icon(Some(load_window_icon())),
@@ -88,7 +88,7 @@ impl AppSetup {
 
     #[cfg(target_arch = "wasm32")]
     fn resumed_wasm(&mut self, event_loop: &ActiveEventLoop) {
-        let mut attributes = winit::window::Window::default_attributes().with_title("Atlas");
+        let mut attributes = WinitWindow::default_attributes().with_title("Atlas");
 
         use wasm_bindgen::JsCast;
         use winit::platform::web::WindowAttributesExtWebSys;
@@ -211,12 +211,12 @@ pub struct App {
     mouse_pos: Vec2,
 
     last_size: UVec2,
-    window: Arc<Window>,
-    windows: Vec<Arc<Window>>,
+    window: Arc<WinitWindow>,
+    windows: Vec<Arc<WinitWindow>>,
 }
 
 impl App {
-    pub fn new(renderer: Renderer, window: impl Into<Arc<Window>>) -> Self {
+    pub fn new(renderer: Renderer, window: impl Into<Arc<WinitWindow>>) -> Self {
         let window: Arc<_> = window.into();
         Self {
             ui: ui::State::new(renderer.wgpu.clone(), window.clone()),
@@ -308,9 +308,9 @@ impl App {
 
         // ui.begin_window();
 
-        for i in 0..10 {
+        for i in 0..100 {
             ui.begin_widget(
-                &format!("outer_{}", i + 1),
+                &format!("outer_{i}"),
                 WidgetOpt::new()
                     .draggable()
                     .fill(RGBA::CARMINE)
@@ -400,7 +400,6 @@ impl App {
 
             ui.end_widget();
 
-
             ui.end_widget();
             ui.end_widget();
         }
@@ -425,7 +424,7 @@ impl App {
             PhysicalKey::Code(KeyCode::KeyR) => {
                 if self.windows.len() < 3 {
                     let window = event_loop
-                        .create_window(Window::default_attributes())
+                        .create_window(WinitWindow::default_attributes())
                         .unwrap();
                     self.windows.push(Arc::new(window))
                 }
@@ -476,4 +475,9 @@ impl App {
     fn resize(&mut self, w: u32, h: u32) {
         self.renderer.resize(w, h);
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Window {
+    raw: Arc<WinitWindow>,
 }
