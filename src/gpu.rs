@@ -7,7 +7,7 @@ use std::{
 
 use glam::Vec2;
 
-use crate::{mouse, utils};
+use crate::{mouse, ui, utils};
 
 #[derive(Debug, Clone)]
 pub struct Texture {
@@ -1062,13 +1062,7 @@ impl<'a> RenderTarget<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct WindowOpt {
-    pub surface_format: wgpu::TextureFormat,
-    pub alpha_mode: wgpu::CompositeAlphaMode,
-    pub backend: wgpu::Backends,
-    pub present_mode: wgpu::PresentMode,
-}
+
 
 pub type WindowId = winit::window::WindowId;
 
@@ -1084,6 +1078,9 @@ pub struct Window {
     pub surface_config: wgpu::SurfaceConfiguration,
     // TODO: framebuffer, depthtexture etc...
     pub current_surface_texture: Option<wgpu::SurfaceTexture>,
+
+    pub resize_dir: Option<ui::Dir>,
+
     pub core: Arc<WindowCore>,
 }
 
@@ -1110,7 +1107,7 @@ impl Window {
         self.core.raw.set_cursor(icon);
     }
 
-    pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
+    pub fn on_resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
         self.surface_config.width = width.max(1);
         self.surface_config.height = height.max(1);
         self.core.surface.configure(device, &self.surface_config);
@@ -1119,6 +1116,11 @@ impl Window {
     pub fn size(&self) -> Vec2 {
         let size = self.core.raw.inner_size();
         Vec2::new(size.width as f32, size.height as f32)
+    }
+
+    pub fn set_window_size(&mut self, width: u32, height: u32) {
+        use winit::dpi::PhysicalSize;
+        self.core.raw.request_inner_size(PhysicalSize::new(width, height));
     }
 
     pub fn from_surface(
@@ -1131,6 +1133,7 @@ impl Window {
             id,
             surface_config,
             current_surface_texture: None,
+            resize_dir: None,
             core: Arc::new(WindowCore {
                 surface,
                 raw
@@ -1166,6 +1169,7 @@ impl Window {
             id: raw.id(),
             surface_config,
             current_surface_texture: None,
+            resize_dir: None,
             core: Arc::new(WindowCore {
                 surface,
                 raw,
@@ -1186,7 +1190,7 @@ impl Window {
 
     pub fn reconfigure(&mut self, device: &wgpu::Device) {
         let size = self.core.raw.inner_size();
-        self.resize(size.width, size.height, device)
+        self.on_resize(size.width, size.height, device)
     }
 
     /// returns false when unable to accquire the current surface texture

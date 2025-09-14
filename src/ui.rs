@@ -892,7 +892,7 @@ impl State {
             draw_dbg_wireframe: false,
             resize_threshold: 10.0,
             prev_n_draw_calls: 0,
-            window: window,
+            window,
         }
     }
 
@@ -938,6 +938,21 @@ impl State {
     }
 
 
+    pub fn add_window(&mut self, label: &str) {
+        let size = self.window.size();
+        let (id, _) = self.begin_widget(label, WidgetOpt::new()
+            .size_px(size.x, size.y)
+            .resizable());
+
+        let size = self[id].rect.size();
+        self[id].rect = Rect::from_min_size(Vec2::ZERO, size);
+
+        if let Some(WidgetAction::Resize { dir, .. }) = self.curr_widget_action {
+            self.window.set_window_size(size.x as u32, size.y as u32)
+        };
+
+        self.end_widget();
+    }
 
     pub fn debug_window(&mut self, dt: Duration) {
         self.begin_widget(
@@ -946,6 +961,7 @@ impl State {
                 .fill(RGBA::INDIGO)
                 .size_fit()
                 .draggable()
+                .pos_px(10.0, 10.0)
                 .padding(40.0)
                 .corner_radius(10.0)
                 .spacing(18.0)

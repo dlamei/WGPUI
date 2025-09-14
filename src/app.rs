@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use glam::{UVec2, Vec2};
 use winit::{
@@ -10,7 +10,7 @@ use winit::{
 };
 
 use crate::{
-    gpu::{WGPUHandle, Window, WindowId, WGPU}, mouse::MouseBtn, ui::{self, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
+    gpu::{WGPUHandle, Window, WindowId, WGPU}, mouse::MouseBtn, ui::{self, WidgetId, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
 };
 
 pub enum AppSetup {
@@ -50,6 +50,8 @@ impl AppSetup {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed_native(&mut self, event_loop: &ActiveEventLoop) {
+        // use winit::platform::windows::WindowAttributesExtWindows;
+
         if self.is_init() {
             return;
         }
@@ -58,6 +60,7 @@ impl AppSetup {
             .create_window(
                 WinitWindow::default_attributes()
                     .with_title("Atlas")
+                    // .with_corner_preference(winit::platform::windows::CornerPreference::Round)
                     // .with_decorations(false)
                     .with_window_icon(Some(load_window_icon())),
             )
@@ -187,16 +190,6 @@ impl ApplicationHandler for AppSetup {
     }
 }
 
-macro_rules! get_mut_window {
-    ($app:ident, $id:ident) => {
-        if $app.window.id == $id {
-            &mut $app.window
-        } else {
-            $app.windows.iter_mut().find(|w| w.id == $id).unwrap()
-        }
-    }
-}
-
 pub struct App {
     ui: ui::State,
 
@@ -208,31 +201,31 @@ pub struct App {
     mouse_pos: Vec2,
 
     wgpu: WGPUHandle,
-    window: Window,
-    windows: Vec<Window>,
+    // window: Window,
+    main_window: WindowId,
+    windows: HashMap<WindowId, Window>,
 }
 
 impl App {
-    pub fn new(wgpu: WGPU, main_window: Window) -> Self {
+    pub fn new(wgpu: WGPU, window: Window) -> Self {
         let wgpu = Arc::new(wgpu);
+        let main_window = window.id;
+        let mut windows = HashMap::new();
+        windows.insert(main_window, window.clone());
         Self {
-            ui: ui::State::new(wgpu.clone(), main_window.clone()),
+            ui: ui::State::new(wgpu.clone(), window),
             dbg_wireframe: false,
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
             wgpu,
-            window: main_window,
-            windows: vec![],
+            main_window,
+            windows,
         }
     }
 
     fn get_window(&self, id: WindowId) -> &Window {
-        if self.window.id == id {
-            &self.window
-        } else {
-            self.windows.iter().find(|w| w.id == id).unwrap()
-        }
+        self.windows.get(&id).unwrap()
     }
 
 
@@ -250,6 +243,7 @@ impl App {
         match event {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
+                // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
             WE::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
@@ -272,7 +266,7 @@ impl App {
                 }
             }
             WE::RedrawRequested => {
-                if id == self.window.id {
+                if id == self.main_window {
                     self.on_update();
                 }
                 self.on_redraw(event_loop, id);
@@ -283,7 +277,7 @@ impl App {
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
 
-                get_mut_window!(self, id).resize(width, height, &self.wgpu.device);
+                self.windows.get_mut(&id).unwrap().on_resize(width, height, &self.wgpu.device);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
@@ -296,9 +290,11 @@ impl App {
         ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
         ui.start_frame();
 
+        ui.add_window("window");
+
         // ui.begin_window();
 
-        for i in 0..100 {
+        for i in 0..3 {
             ui.begin_widget(
                 &format!("outer_{i}"),
                 WidgetOpt::new()
@@ -416,7 +412,7 @@ impl App {
                         .unwrap();
                     let size = window.inner_size();
                     let window = Window::new(window, size.width, size.height, &self.wgpu);
-                    self.windows.push(window)
+                    self.windows.insert(window.id, window);
                 }
             }
             _ => (),
@@ -430,7 +426,7 @@ impl App {
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
 
-        let window = get_mut_window!(self, id);
+        let window = self.windows.get_mut(&id).unwrap();
 
         {
             let Some(mut target) = window.prepare_frame(&self.wgpu) else {
@@ -446,6 +442,6 @@ impl App {
     }
 
     fn resize_main_window(&mut self, w: u32, h: u32) {
-        self.window.resize(w, h, &self.wgpu.device);
+        self.windows.get_mut(&self.main_window).unwrap().on_resize(w, h, &self.wgpu.device);
     }
 }
