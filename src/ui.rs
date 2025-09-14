@@ -2327,46 +2327,62 @@ pub fn tessellate_line(
     let half = thickness * 0.5;
 
     let mut verts: Vec<Vertex> = Vec::with_capacity(count * 4);
-    let mut idxs: Vec<u32> = Vec::with_capacity(count * 6);
+    let mut idxs: Vec<u32> = Vec::with_capacity(count * 12);
 
-    let mut base_idx: u32 = 0;
+    // First pass through just adds verts
     for i in 0..count {
-        let i2 = if (i + 1) == points.len() { 0 } else { i + 1 };
-        let p1 = points[i];
-        let p2 = points[i2];
+        let i_next = if (i + 1) == points.len() { 0 } else { i + 1 };
 
-        let mut dx = p2.x - p1.x;
-        let mut dy = p2.y - p1.y;
-        let len2 = dx * dx + dy * dy;
-        if len2 <= std::f32::EPSILON {
+        let p_curr = points[i];
+        let p_next = points[i_next];
+
+        let mut dx_next = p_next.x - p_curr.x;
+        let mut dy_next = p_next.y - p_curr.y;
+        let len_next = dx_next * dx_next + dy_next * dy_next;
+        if len_next <= std::f32::EPSILON {
             // degenerate segment -> make a vertical fallback
-            dx = 0.0;
-            dy = 1.0;
+            dx_next = 0.0;
+            dy_next = 1.0;
         } else {
-            let inv_len = 1.0 / len2.sqrt();
-            dx *= inv_len;
-            dy *= inv_len;
+            let inv_len = 1.0 / len_next.sqrt();
+            dx_next *= inv_len;
+            dy_next *= inv_len;
         }
 
         // perpendicular (normalized) scaled by half thickness
-        let px = dy * half;
-        let py = -dx * half;
+        let px = dy_next * half;
+        let py = -dx_next * half;
 
-        // produce 4 verts for the quad (not sharing edges, same layout as original path 4)
-        verts.push(Vertex::color(Vec2::new(p1.x + px, p1.y + py), col));
-        verts.push(Vertex::color(Vec2::new(p2.x + px, p2.y + py), col));
-        verts.push(Vertex::color(Vec2::new(p2.x - px, p2.y - py), col));
-        verts.push(Vertex::color(Vec2::new(p1.x - px, p1.y - py), col));
+        // 4 verts for the rect, vert 0 and 1 are "above" and "below" the first point and vert 2 and 3 are "above" and "below" the second point
+        verts.push(Vertex::color(Vec2::new(p_curr.x + px, p_curr.y + py), col));
+        verts.push(Vertex::color(Vec2::new(p_curr.x - px, p_curr.y - py), col));
+        verts.push(Vertex::color(Vec2::new(p_next.x + px, p_next.y + py), col));
+        verts.push(Vertex::color(Vec2::new(p_next.x - px, p_next.y - py), col));
+    }
 
-        // two triangles (0,1,2) and (0,2,3) relative to base_idx
-        idxs.push(base_idx + 0);
-        idxs.push(base_idx + 1);
-        idxs.push(base_idx + 2);
-        idxs.push(base_idx + 0);
-        idxs.push(base_idx + 2);
-        idxs.push(base_idx + 3);
+    let mut base_idx_prev: u32 = 0; 
+    let mut base_idx_curr: u32 = 0;
+    // Second passthrough draws triangles
+    for i in 0..count {
+    base_idx_prev = if i == 0 { ((points.len() - 1) * 4).try_into().unwrap() } else { ((i - 1) * 4).try_into().unwrap() };
+    base_idx_curr = (i * 4).try_into().unwrap();
 
-        base_idx += 4;
+        // Connection triangles to previous one. For first only do it if closed is true
+        if (i > 0) || closed {
+            idxs.push(base_idx_prev + 2);
+            idxs.push(base_idx_curr + 0);
+            idxs.push(base_idx_prev + 3);
+            idxs.push(base_idx_prev + 2);
+            idxs.push(base_idx_curr + 1);
+            idxs.push(base_idx_prev + 3);
+        }
+        // two triangles (0,2,3) and (0,3,1) relative to base_idx
+        idxs.push(base_idx_curr + 0);
+        idxs.push(base_idx_curr + 2);
+        idxs.push(base_idx_curr + 3);
+        idxs.push(base_idx_curr + 0);
+        idxs.push(base_idx_curr + 3);
+        idxs.push(base_idx_curr + 1);
     }
 
     (verts, idxs)
@@ -2816,6 +2832,7 @@ impl DrawList {
         self.path_clear();
     }
 
+    // Here
     pub fn path_arc_around(
         &mut self,
         center: Vec2,
