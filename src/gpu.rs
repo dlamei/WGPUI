@@ -1076,7 +1076,6 @@ pub struct WindowCore {
 pub struct Window {
     pub id: WindowId,
     pub surface_config: wgpu::SurfaceConfiguration,
-    // TODO: framebuffer, depthtexture etc...
     pub current_surface_texture: Option<wgpu::SurfaceTexture>,
 
     pub resize_dir: Option<ui::Dir>,

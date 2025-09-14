@@ -837,7 +837,6 @@ pub struct State {
     /// focused element
     pub active_id: WidgetId,
 
-    // TODO[NOTE]: maybe allow for cursor beging the center, top left, etc... when placing the widget
     /// position where next widget is drawn
     pub cursor: Vec2,
     pub next_widget_placement: PerAxis<Placement>,
@@ -1412,7 +1411,6 @@ impl State {
         }
     }
 
-    // TODO[BUG] : widget is not resizable if its not clickable
     pub fn handle_signal_of_id(&mut self, id: WidgetId) -> Signals {
         let Some(w) = self.widgets.get(&id) else {
             return Signals::NONE;
@@ -1435,36 +1433,6 @@ impl State {
             }
         }
 
-        // if signal.mouse_over()
-        //     && self.mouse.pressed(MouseBtn::Left)
-        //     && !self.mouse.dragging(MouseBtn::Left)
-        // {
-        //     // TODO[CHECK]
-        //     // one should be able to drag the widget when mouse is over a child that is not
-        //     // clickable. bit hacky...
-        //     //
-        //     assert!(!self.hot_id.is_null());
-        //     // if current hot is not clickable, allow fall through
-        //     if w.opt.flags.clickable() && (!self[self.hot_id].opt.flags.clickable()
-        //         // if active is null or not clickable
-        //         // if active is null or not clickable and current is over active
-        //         || (self.active_id.is_null() || !self[self.active_id].opt.flags.clickable()))
-        //         && w.opt.flags.clickable()
-        //         // && self.is_id_over(id, self.active_id)
-        //     {
-        //         // log::info!("{id}");
-        //         // self.hot_id = id;
-        //         self.active_id = id;
-        //     }
-        // }
-
-        // if signal.mouse_over()
-        //     && !self.mouse.dragging(MouseBtn::Left)
-        //     && (self.hot_id.is_null() || !self[self.hot_id].opt.flags.clickable())
-        //     && self.is_id_over(id, self.hot_id)
-        // {
-        //     self.hot_id = id;
-        // }
 
         // if hot_id from previous frame is id set to hovering
         if signal.mouse_over() && self.hot_id == id {
@@ -1537,8 +1505,6 @@ impl State {
     }
 
     pub fn add_button_impl(&mut self, label: &str) -> (WidgetId, Signals) {
-        // TODO[BUG]: pressing button and then pressing a non clickable surface still striggers the
-        // button click
 
         // TODO[BUG]: when performing a double press with the first press being on the button, and
         // second outside we still set button to active
