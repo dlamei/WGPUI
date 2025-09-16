@@ -411,6 +411,10 @@ impl WidgetOpt {
         self
     }
 
+    pub fn padding_dir(mut self, p: Padding) -> Self {
+        self.padding = p;
+        self
+    }
     pub fn padding(mut self, m: f32) -> Self {
         self.padding = Padding::all(m);
         self
@@ -664,6 +668,39 @@ pub struct Widget {
     pub frame_created: u64,
 }
 
+pub fn is_in_resize_region(r: Rect, pnt: Vec2, thr: f32) -> Option<Dir> {
+    let in_corner_region = |corner: Vec2| -> bool { corner.distance_squared(pnt) <= thr.powi(2) };
+
+    if in_corner_region(r.right_top()) {
+        Some(Dir::NE)
+    } else if in_corner_region(r.right_bottom()) {
+        Some(Dir::SE)
+    } else if in_corner_region(r.left_bottom()) {
+        Some(Dir::SW)
+    } else if in_corner_region(r.left_top()) {
+        Some(Dir::NW)
+    } else {
+        let top_y = r.left_top().y;
+        let bottom_y = r.left_bottom().y;
+        let left_x = r.left_top().x;
+        let right_x = r.right_top().x;
+
+        if (pnt.y - top_y).abs() <= thr && pnt.x >= left_x + thr && pnt.x <= right_x - thr {
+            Some(Dir::N)
+        } else if (pnt.y - bottom_y).abs() <= thr && pnt.x >= left_x + thr && pnt.x <= right_x - thr
+        {
+            Some(Dir::S)
+        } else if (pnt.x - right_x).abs() <= thr && pnt.y >= top_y + thr && pnt.y <= bottom_y - thr
+        {
+            Some(Dir::E)
+        } else if (pnt.x - left_x).abs() <= thr && pnt.y >= top_y + thr && pnt.y <= bottom_y - thr {
+            Some(Dir::W)
+        } else {
+            None
+        }
+    }
+}
+
 impl Widget {
     pub fn new(id: WidgetId, opt: WidgetOpt) -> Self {
         Self {
@@ -693,11 +730,68 @@ impl Widget {
         self.last = WidgetId::NULL;
     }
 
-    pub fn point_over(&self, point: Vec2, threashold: f32) -> bool {
-        let off = Vec2::splat(self.opt.outline_width) / 2.0 + Vec2::splat(threashold);
-        let min = self.rect.min - off;
-        let max = self.rect.max + off;
+    pub fn is_point_over(&self, point: Vec2, threshold: f32) -> bool {
+        let off = Vec2::splat(self.opt.outline_width) / 2.0 + Vec2::splat(threshold);
+        let mut min = self.rect.min ;
+        let mut max = self.rect.max ;
+        // if self.opt.flags.resizable() {
+            min = min - off;
+            max = max + off;
+        // }
         Rect::from_min_max(min, max).contains(point)
+
+    }
+
+    pub fn is_in_resize_region(&self, pnt: Vec2, threshold: f32) -> Option<Dir> {
+        let r = self.rect;
+        let flags = self.opt.flags;
+        let thr = threshold + self.opt.outline_width / 2.0;
+
+        let in_corner_region =
+            |corner: Vec2| -> bool { corner.distance_squared(pnt) <= thr.powi(2) };
+
+        if in_corner_region(r.right_top()) && flags.resizable_ne() {
+            Some(Dir::NE)
+        } else if in_corner_region(r.right_bottom()) && flags.resizable_se() {
+            Some(Dir::SE)
+        } else if in_corner_region(r.left_bottom()) && flags.resizable_sw() {
+            Some(Dir::SW)
+        } else if in_corner_region(r.left_top()) && flags.resizable_nw() {
+            Some(Dir::NW)
+        } else {
+            let top_y = r.left_top().y;
+            let bottom_y = r.left_bottom().y;
+            let left_x = r.left_top().x;
+            let right_x = r.right_top().x;
+
+            if (pnt.y - top_y).abs() <= thr
+                && pnt.x >= left_x + thr
+                && pnt.x <= right_x - thr
+                && flags.resizable_n()
+            {
+                Some(Dir::N)
+            } else if (pnt.y - bottom_y).abs() <= thr
+                && pnt.x >= left_x + thr
+                && pnt.x <= right_x - thr
+                && flags.resizable_s()
+            {
+                Some(Dir::S)
+            } else if (pnt.x - right_x).abs() <= thr
+                && pnt.y >= top_y + thr
+                && pnt.y <= bottom_y - thr
+                && flags.resizable_e()
+            {
+                Some(Dir::E)
+            } else if (pnt.x - left_x).abs() <= thr
+                && pnt.y >= top_y + thr
+                && pnt.y <= bottom_y - thr
+                && flags.resizable_w()
+            {
+                Some(Dir::W)
+            } else {
+                None
+            }
+        }
     }
 
     // TODO[NOTE]: how do we handle if e.g. min is larger than max?
@@ -784,6 +878,20 @@ impl Dir {
     pub fn has_w(&self) -> bool {
         matches!(self, Self::W | Self::NW | Self::SW)
     }
+
+    pub fn as_winit_resize(&self) -> winit::window::ResizeDirection {
+        use winit::window::ResizeDirection as RD;
+        match self {
+            Dir::N => RD::North,
+            Dir::NE => RD::NorthEast,
+            Dir::E => RD::East,
+            Dir::SE => RD::SouthEast,
+            Dir::S => RD::South,
+            Dir::SW => RD::SouthWest,
+            Dir::W => RD::West,
+            Dir::NW => RD::NorthWest,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -793,19 +901,47 @@ pub enum WidgetAction {
         id: WidgetId,
         prev_rect: Rect,
     },
-    Move {
+    Drag {
         start_pos: Vec2,
         id: WidgetId,
     },
+    ResizeWindow {
+        dir: Dir,
+    },
+    DragWindow,
+
+    None,
+}
+
+impl WidgetAction {
+    pub fn is_none(&self) -> bool {
+        match self {
+            Self::None => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_window_action(&self) -> bool {
+        match self {
+            Self::DragWindow { .. } | Self::ResizeWindow { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for WidgetAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WidgetAction::Resize { dir, id, prev_rect } => {
+            Self::Resize { dir, id, prev_rect } => {
                 write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}")
             }
-            WidgetAction::Move { start_pos, id } => write!(f, "MOVE {{ {id}, {start_pos} }}"),
+            Self::Drag { start_pos, id } => write!(f, "MOVE {{ {id}, {start_pos} }}"),
+
+            Self::ResizeWindow { dir } => {
+                write!(f, "RESIZE_WINDOW[{dir:?}]")
+            }
+            Self::DragWindow => write!(f, "MOVE_WINDOW"),
+            Self::None => write!(f, "NONE"),
         }
     }
 }
@@ -845,7 +981,7 @@ pub struct State {
     pub draw: DrawList,
 
     pub resize_threshold: f32,
-    pub curr_widget_action: Option<WidgetAction>,
+    pub curr_widget_action: WidgetAction,
 
     pub cursor_icon: CursorIcon,
     pub cursor_icon_changed: bool,
@@ -853,7 +989,13 @@ pub struct State {
     pub prev_n_draw_calls: u32,
 
     pub draw_dbg_wireframe: bool,
+
+    pub custom_tab_height: f32,
+
+    pub window_id: WidgetId,
+    pub cursor_in_window: bool,
     pub window: Window,
+    // pub window: Window,
 }
 
 impl ops::Index<WidgetId> for State {
@@ -879,7 +1021,7 @@ impl State {
             cursor: Vec2::ZERO,
             next_widget_placement: PerAxis([Placement::Min; 2]),
             roots: Vec::new(),
-            curr_widget_action: None,
+            curr_widget_action: WidgetAction::None,
             hot_id: WidgetId::NULL,
             active_id: WidgetId::NULL,
             mouse: MouseRec::new(),
@@ -891,16 +1033,52 @@ impl State {
             draw_dbg_wireframe: false,
             resize_threshold: 10.0,
             prev_n_draw_calls: 0,
+            custom_tab_height: 40.0,
+            window_id: WidgetId::NULL,
             window,
+            cursor_in_window: true,
         }
     }
 
     pub fn set_mouse_press(&mut self, button: MouseBtn, press: bool) {
-        self.mouse.set_button_press(button, press)
+        self.mouse.set_button_press(button, press);
+
+        let w_size = self.window.window_size();
+        let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
+
+        let resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+        let lft_btn = button == MouseBtn::Left;
+
+        if !self.window.is_decorated() {
+            if press && lft_btn {
+                if let Some(dir) = resize_dir {
+                    self.curr_widget_action = WidgetAction::ResizeWindow { dir };
+                    self.window.start_drag_resize_window(dir)
+                } else if self.mouse.pos.y <= self.custom_tab_height {
+                    self.curr_widget_action = WidgetAction::DragWindow;
+                    self.window.start_drag_window()
+                }
+            }
+
+            if !press && lft_btn && self.curr_widget_action.is_window_action() {
+                self.curr_widget_action = WidgetAction::None;
+            }
+        }
     }
 
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
-        self.mouse.set_mouse_pos(x, y)
+        self.mouse.set_mouse_pos(x, y);
+
+        let w_size = self.window.window_size();
+        let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
+        let resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+
+        if let Some(dir) = resize_dir {
+            self.set_cursor_icon(dir.as_cursor());
+        } else if self.cursor_icon.is_resize() {
+            self.set_cursor_icon(CursorIcon::Default);
+        }
+        // }
     }
 
     pub fn set_next_placement_x(&mut self, p: Placement) {
@@ -921,13 +1099,18 @@ impl State {
         self.roots.clear();
         self.widget_stack.clear();
         self.cursor = Vec2::ZERO;
-        self.cursor_icon_changed = false;
 
-        self.draw.screen_size = self.window.size();
+        self.draw.screen_size = self.window.window_size();
 
-        if self.curr_widget_action.is_none() {
-            self.set_cursor_icon(CursorIcon::Default)
+        match self.curr_widget_action {
+            WidgetAction::Resize { dir, .. } | WidgetAction::ResizeWindow { dir } => {
+                self.set_cursor_icon(dir.as_cursor());
+            }
+            _ => (),
         }
+        // if self.curr_widget_action.is_none() {
+        //     self.set_cursor_icon(CursorIcon::Default)
+        // }
 
         // self.draw.draw_uv_rect(
         //     Rect::from_min_max(Vec2::ZERO, Vec2::splat(800.0)),
@@ -936,21 +1119,128 @@ impl State {
         // );
     }
 
+    pub fn begin_window(&mut self, title: &str) {
+        let padding = 5.0;
 
-    pub fn add_window(&mut self, label: &str) {
-        let size = self.window.size();
-        let (id, _) = self.begin_widget(label, WidgetOpt::new()
-            .size_px(size.x, size.y)
-            .resizable());
+        // without padding
+        let tab_height = self.custom_tab_height - 2.0 * padding;
+        let bg_col = RGBA::hex("#242933");
+        let tab_col = RGBA::hex("#2e2e2e");
+        let tab_col = bg_col;
 
-        let size = self[id].rect.size();
-        self[id].rect = Rect::from_min_size(Vec2::ZERO, size);
+        let win_size = self.window.window_size();
+        // let mut opt = WidgetOpt::new()
+            // .resizable()
+            // .draggable()
+            // .fill()
+            // .corner_radius(10.0)
+            // .padding(padding)
+            // .size_fit();
 
-        if let Some(WidgetAction::Resize { dir, .. }) = self.curr_widget_action {
-            self.window.set_window_size(size.x as u32, size.y as u32)
+        // if let Some(bg) = bg {
+        //     opt = opt.fill(bg);
+        // }
+        // if let Some((col, width)) = border {
+        //     opt = opt.outline(col, width);
+        // }
+
+
+        if self.window.is_decorated() {
+            let (win_id, _) = self.begin_widget(title, 
+                WidgetOpt::new()
+                .fill(bg_col)
+                .size_px(win_size.x as f32, win_size.y as f32)
+                .padding(padding)
+            );
+            self[win_id].rect = Rect::from_min_size(Vec2::ZERO, win_size);
+            let win_rect = self[win_id].rect;
+            return
+        }
+
+        self.set_cursor(0.0, 0.0);
+        let (id, _) = self.begin_widget(
+            "window bar#",
+            WidgetOpt::new()
+            .size_px(win_size.x, self.custom_tab_height)
+            .fill(tab_col)
+            .layout_h()
+            .padding_dir(Padding::new(0.0, 0.0, 5.0, 5.0))
+            .spacing(10.0)
+        );
+        self[id].rect = Rect::from_min_size(Vec2::ZERO, Vec2::new(win_size.x, self.custom_tab_height));
+
+        self.add_label(title, 25.0);
+
+        let mut add_icon = |ui: &mut State, name: &str| -> bool {
+            let id = ui.next_id(name);
+            let mut is_hover = false;
+            let mut is_active = false;
+            if let Some(w) = ui.widgets.get(&id) {
+                is_hover = ui.is_hot(id);
+                is_active = ui.is_active(id);
+            }
+
+            let mut fill = if is_hover {
+                RGBA::hex("#3e4759")
+            } else {
+                tab_col
+            };
+
+            let (_, sig) = ui.begin_widget(
+                name,
+                WidgetOpt::new()
+                .text(name, 30.0)
+                .size_text()
+                .fill(fill)
+                .padding(5.0)
+                .corner_radius(5.0)
+                .clickable()
+                .layout_h());
+
+            ui.end_widget();
+            sig.released()
         };
 
+        self.offset_cursor_x(win_size.x - 300.0);
+        if add_icon(self, "min") {
+            self.window.minimize();
+        }
+        if add_icon(self, "max") {
+            self.window.toggle_maximize();
+        }
+        if add_icon(self, "ext") {
+            std::process::exit(0)
+        }
         self.end_widget();
+
+
+        let (win_id, _) = self.begin_widget(title, 
+            WidgetOpt::new()
+            .fill(bg_col)
+            .size_px(win_size.x as f32, win_size.y as f32)
+            .padding(padding)
+        );
+        self[win_id].rect = Rect::from_min_max(Vec2::new(0.0, self.custom_tab_height), win_size);
+
+    }
+
+    pub fn end_window(&mut self) {
+        // window
+        self.end_widget();
+    }
+
+    pub fn add_window(&mut self, label: &str) {
+        let win_size = self.window.window_size();
+        let (id, _) = self.begin_widget(label, WidgetOpt::new().layout_h());
+
+        if self.add_button("close") {
+            log::info!("close")
+        }
+        let rect = &mut self[id].rect;
+        *rect = Rect::from_min_size(Vec2::ZERO, win_size);
+
+        self.end_widget();
+        self.window_id = id;
     }
 
     pub fn debug_window(&mut self, dt: Duration) {
@@ -997,15 +1287,7 @@ impl State {
         self.add_widget(
             "action",
             WidgetOpt::new()
-                .text(
-                    &format!(
-                        "action: {}",
-                        self.curr_widget_action
-                            .map(|a| format!("{a}"))
-                            .unwrap_or("".into())
-                    ),
-                    32.0,
-                )
+                .text(&format!("action: {:?}", self.curr_widget_action), 32.0)
                 .size_text(),
         );
         self.end_widget();
@@ -1038,6 +1320,9 @@ impl State {
         if !self.id_stack.is_empty() {
             log::warn!("end_frame: id_stack is not empty at frame end");
         }
+        if !self.widget_stack.is_empty() {
+            log::warn!("end_frame: widget_stack is not empty at frame end");
+        }
 
         if let Some(w) = self.widgets.get(&WidgetId::NULL) {
             log::warn!("widget should not have null as id:\n{:?}", w);
@@ -1049,6 +1334,7 @@ impl State {
         self.update_active_widget();
         self.handle_widget_action();
         self.update_cursor_icon();
+        self.cursor_icon_changed = false;
 
         self.mouse.clear_released();
 
@@ -1214,7 +1500,7 @@ impl State {
         } else {
             0.0
         };
-        if !w.point_over(self.mouse.pos, threshold) {
+        if !w.is_point_over(self.mouse.pos, threshold) {
             self.hot_id = WidgetId::NULL;
             return;
         }
@@ -1227,7 +1513,7 @@ impl State {
             // clickable widget under mouse and set it to active
             for &id in self.draw_order.iter().rev() {
                 let w = &self[id];
-                if w.opt.flags.clickable() && w.point_over(self.mouse.pos, 0.0) {
+                if w.opt.flags.clickable() && w.is_point_over(self.mouse.pos, 0.0) {
                     self.active_id = id;
                     break;
                 }
@@ -1235,70 +1521,84 @@ impl State {
         }
 
         // TODO[BUG]: starting a drag and then crossing the outline should not result in resizing
-        let mut can_resize = None;
-        if flags.resizable() && self.curr_widget_action.is_none() {
-            let r = &w_rect;
-            let m = self.mouse.pos;
-
-            let thr = self.resize_threshold + w.opt.outline_width / 2.0;
-
-            let in_corner_region =
-                |corner: Vec2| -> bool { corner.distance_squared(m) <= thr.powi(2) };
-
-            if in_corner_region(r.right_top()) && flags.resizable_ne() {
-                can_resize = Some(Dir::NE)
-            } else if in_corner_region(r.right_bottom()) && flags.resizable_se() {
-                can_resize = Some(Dir::SE)
-            } else if in_corner_region(r.left_bottom()) && flags.resizable_sw() {
-                can_resize = Some(Dir::SW)
-            } else if in_corner_region(r.left_top()) && flags.resizable_nw() {
-                can_resize = Some(Dir::NW)
-            } else {
-                let top_y = r.left_top().y;
-                let bottom_y = r.left_bottom().y;
-                let left_x = r.left_top().x;
-                let right_x = r.right_top().x;
-
-                if (m.y - top_y).abs() <= thr
-                    && m.x >= left_x + thr
-                    && m.x <= right_x - thr
-                    && flags.resizable_n()
-                {
-                    can_resize = Some(Dir::N)
-                } else if (m.y - bottom_y).abs() <= thr
-                    && m.x >= left_x + thr
-                    && m.x <= right_x - thr
-                    && flags.resizable_s()
-                {
-                    can_resize = Some(Dir::S)
-                } else if (m.x - right_x).abs() <= thr
-                    && m.y >= top_y + thr
-                    && m.y <= bottom_y - thr
-                    && flags.resizable_e()
-                {
-                    can_resize = Some(Dir::E)
-                } else if (m.x - left_x).abs() <= thr
-                    && m.y >= top_y + thr
-                    && m.y <= bottom_y - thr
-                    && flags.resizable_w()
-                {
-                    can_resize = Some(Dir::W)
-                }
-            }
-
-            if let Some(dir) = can_resize {
+        if self.curr_widget_action.is_none() && w.opt.flags.resizable() {
+            if let Some(dir) = w.is_in_resize_region(self.mouse.pos, self.resize_threshold) {
                 self.set_cursor_icon(dir.as_cursor());
 
                 if self.mouse.pressed(MouseBtn::Left) {
-                    self.curr_widget_action = Some(WidgetAction::Resize {
+                    self.curr_widget_action = WidgetAction::Resize {
                         dir,
                         id: self.hot_id,
                         prev_rect: w_rect,
-                    });
+                    };
                     self.active_id = self.hot_id;
                 }
             }
         }
+        // let mut can_resize = None;
+        // if flags.resizable() && self.curr_widget_action.is_none() {
+        // let r = &w_rect;
+        // let m = self.mouse.pos;
+
+        // let thr = self.resize_threshold + w.opt.outline_width / 2.0;
+
+        // let in_corner_region =
+        //     |corner: Vec2| -> bool { corner.distance_squared(m) <= thr.powi(2) };
+
+        // if in_corner_region(r.right_top()) && flags.resizable_ne() {
+        //     can_resize = Some(Dir::NE)
+        // } else if in_corner_region(r.right_bottom()) && flags.resizable_se() {
+        //     can_resize = Some(Dir::SE)
+        // } else if in_corner_region(r.left_bottom()) && flags.resizable_sw() {
+        //     can_resize = Some(Dir::SW)
+        // } else if in_corner_region(r.left_top()) && flags.resizable_nw() {
+        //     can_resize = Some(Dir::NW)
+        // } else {
+        //     let top_y = r.left_top().y;
+        //     let bottom_y = r.left_bottom().y;
+        //     let left_x = r.left_top().x;
+        //     let right_x = r.right_top().x;
+
+        //     if (m.y - top_y).abs() <= thr
+        //         && m.x >= left_x + thr
+        //         && m.x <= right_x - thr
+        //         && flags.resizable_n()
+        //     {
+        //         can_resize = Some(Dir::N)
+        //     } else if (m.y - bottom_y).abs() <= thr
+        //         && m.x >= left_x + thr
+        //         && m.x <= right_x - thr
+        //         && flags.resizable_s()
+        //     {
+        //         can_resize = Some(Dir::S)
+        //     } else if (m.x - right_x).abs() <= thr
+        //         && m.y >= top_y + thr
+        //         && m.y <= bottom_y - thr
+        //         && flags.resizable_e()
+        //     {
+        //         can_resize = Some(Dir::E)
+        //     } else if (m.x - left_x).abs() <= thr
+        //         && m.y >= top_y + thr
+        //         && m.y <= bottom_y - thr
+        //         && flags.resizable_w()
+        //     {
+        //         can_resize = Some(Dir::W)
+        //     }
+        // }
+
+        //     if let Some(dir) = can_resize {
+        //         self.set_cursor_icon(dir.as_cursor());
+
+        //         if self.mouse.pressed(MouseBtn::Left) {
+        //             self.curr_widget_action = Some(WidgetAction::Resize {
+        //                 dir,
+        //                 id: self.hot_id,
+        //                 prev_rect: w_rect,
+        //             });
+        //             self.active_id = self.hot_id;
+        //         }
+        //     }
+        // }
     }
 
     // TODO[NOTE]: moving a widget leads to its children being a frame behind
@@ -1307,9 +1607,10 @@ impl State {
         let m_delta = self.mouse.pos - m_start;
 
         match self.curr_widget_action {
-            Some(WidgetAction::Resize { dir, id, prev_rect }) => {
+            WidgetAction::Resize { dir, id, prev_rect } => {
                 if !self.mouse.pressed(MouseBtn::Left) {
-                    self.curr_widget_action = None;
+                    self.set_cursor_icon(CursorIcon::Default);
+                    self.curr_widget_action = WidgetAction::None;
                     return;
                 }
                 let w = self.widgets.get_mut(&id).unwrap();
@@ -1358,9 +1659,9 @@ impl State {
 
                 w.rect = r;
             }
-            Some(WidgetAction::Move { start_pos, id }) => {
+            WidgetAction::Drag { start_pos, id } => {
                 if !self.mouse.pressed(MouseBtn::Left) {
-                    self.curr_widget_action = None;
+                    self.curr_widget_action = WidgetAction::None;
                     return;
                 }
                 let w = self.widgets.get_mut(&id).unwrap();
@@ -1370,7 +1671,7 @@ impl State {
                 if self.mouse.pressed(MouseBtn::Right) {
                     w.rect = w.rect.translate(start_pos - w.rect.min);
                     // disable action and selection
-                    self.curr_widget_action = None;
+                    self.curr_widget_action = WidgetAction::None;
                     self.active_id = WidgetId::NULL;
                     return;
                 }
@@ -1391,7 +1692,7 @@ impl State {
 
         if !self.mouse.dragging(MouseBtn::Left)
             && self.mouse.pressed(MouseBtn::Left)
-            && !w.point_over(self.mouse.pos, 0.0)
+            && !w.is_point_over(self.mouse.pos, 0.0)
         {
             self.active_id = WidgetId::NULL;
             return;
@@ -1401,13 +1702,13 @@ impl State {
         // start moving the widget
         if self.mouse.dragging(MouseBtn::Left)
             && w.opt.flags.draggable()
-            && w.point_over(self.mouse.pos, 0.0)
+            && w.is_point_over(self.mouse.pos, 0.0)
             && self.curr_widget_action.is_none()
         {
-            self.curr_widget_action = Some(WidgetAction::Move {
+            self.curr_widget_action = WidgetAction::Drag {
                 start_pos: w.rect.min,
                 id: w.id,
-            });
+            };
         }
     }
 
@@ -1423,7 +1724,7 @@ impl State {
         } else {
             0.0
         };
-        if w.opt.flags.hoverable() && w.point_over(self.mouse.pos, threshold) {
+        if w.opt.flags.hoverable() && w.is_point_over(self.mouse.pos, threshold) {
             signal |= Signals::MOUSE_OVER;
         }
 
@@ -1432,7 +1733,6 @@ impl State {
                 self.hot_id = id;
             }
         }
-
 
         // if hot_id from previous frame is id set to hovering
         if signal.mouse_over() && self.hot_id == id {
@@ -1504,8 +1804,7 @@ impl State {
         (id, signal)
     }
 
-    pub fn add_button_impl(&mut self, label: &str) -> (WidgetId, Signals) {
-
+    pub fn add_button_impl(&mut self, label: &str, size: f32) -> (WidgetId, Signals) {
         // TODO[BUG]: when performing a double press with the first press being on the button, and
         // second outside we still set button to active
 
@@ -1533,7 +1832,7 @@ impl State {
         };
 
         let mut opt = WidgetOpt::new()
-            .text(label, 32.0)
+            .text(label, size)
             .text_color(text)
             .size_text()
             .padding(8.0)
@@ -1549,7 +1848,7 @@ impl State {
     }
 
     pub fn add_button(&mut self, label: &str) -> bool {
-        self.add_button_impl(label).1.released()
+        self.add_button_impl(label, 32.0).1.released()
     }
 
     pub fn offset_cursor_y(&mut self, y: f32) {
@@ -1558,6 +1857,20 @@ impl State {
 
     pub fn offset_cursor_x(&mut self, x: f32) {
         self.cursor.x += x;
+    }
+
+
+    pub fn set_cursor_y(&mut self, y: f32) {
+        self.cursor.y = y;
+    }
+
+    pub fn set_cursor_x(&mut self, x: f32) {
+        self.cursor.x = x;
+    }
+
+    pub fn set_cursor(&mut self, x: f32, y: f32) {
+        self.set_cursor_x(x);
+        self.set_cursor_y(y);
     }
 
     pub fn offset_cursor(&mut self, x: f32, y: f32) {
@@ -1617,7 +1930,18 @@ impl State {
 
         let widget_size: Vec2 = if let Some(w) = w {
             // use previous size if available
-            w.rect.size()
+            let mut size = w.rect.size();
+            match opt.size.x() {
+                SizeTyp::Px(x) => size.x = *x,
+                SizeTyp::Text => size.x = text_size.x,
+                SizeTyp::Fit => (),
+            }
+            match opt.size.y() {
+                SizeTyp::Px(y) => size.y = *y,
+                SizeTyp::Text => size.y = text_size.y,
+                SizeTyp::Fit => (),
+            }
+            size
         } else {
             // init size with fixed size if available + padding
             let x = match opt.size[Axis::X] {
@@ -1958,7 +2282,7 @@ impl FontAtlas {
             }
             ctext::SwashContent::Color => (true, image.data),
             ctext::SwashContent::SubpixelMask => {
-                todo!()
+                unimplemented!()
             }
         };
 
@@ -2342,12 +2666,16 @@ pub fn tessellate_line(
         verts.push(Vertex::color(Vec2::new(p_next.x - px, p_next.y - py), col));
     }
 
-    let mut base_idx_prev: u32 = 0; 
+    let mut base_idx_prev: u32 = 0;
     let mut base_idx_curr: u32 = 0;
     // Second passthrough draws triangles
     for i in 0..count {
-    base_idx_prev = if i == 0 { ((points.len() - 1) * 4).try_into().unwrap() } else { ((i - 1) * 4).try_into().unwrap() };
-    base_idx_curr = (i * 4).try_into().unwrap();
+        base_idx_prev = if i == 0 {
+            ((points.len() - 1) * 4).try_into().unwrap()
+        } else {
+            ((i - 1) * 4).try_into().unwrap()
+        };
+        base_idx_curr = (i * 4).try_into().unwrap();
 
         // Connection triangles to previous one. For first only do it if closed is true
         if (i > 0) || closed {
@@ -2556,6 +2884,7 @@ pub struct DrawList {
     pub resolution: f32,
 
     pub font: ctext::FontSystem,
+    pub font_icon: ctext::FontSystem,
     pub text_swash_cache: ctext::SwashCache,
     pub font_atlas: FontAtlas,
     pub white_texture: gpu::Texture,
@@ -2580,9 +2909,11 @@ impl DrawList {
 
     pub fn new(wgpu: WGPUHandle) -> Self {
         let mut font_db = ctext::fontdb::Database::new();
+        font_db.load_font_data(include_bytes!("../res/Roboto.ttf").to_vec());
         // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
         // font_db.load_font_data(include_bytes!("CommitMono-500-Regular.otf").to_vec());
-        font_db.load_font_data(include_bytes!("Roboto.ttf").to_vec());
+        let mut icon_font_db = ctext::fontdb::Database::new();
+        icon_font_db.load_font_data(include_bytes!("../res/Phosphor.ttf").to_vec());
 
         let gpu_vertices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("draw_list_vertex_buffer"),
@@ -2614,6 +2945,7 @@ impl DrawList {
 
             // font: ctext::FontSystem::new(),
             font: ctext::FontSystem::new_with_locale_and_db("en_US".to_owned(), font_db),
+            font_icon: ctext::FontSystem::new_with_locale_and_db("en_US".to_owned(), icon_font_db),
             text_swash_cache: ctext::SwashCache::new(),
             font_atlas: FontAtlas::new(&*wgpu),
             white_texture: gpu::Texture::create(&*wgpu, 1, 1, &RGBA::INDIGO.as_bytes()),
@@ -3203,7 +3535,6 @@ impl gpu::ShaderHandle for UiShader {
             }))
             .sample_count(1)
             .build(&wgpu.device)
-
     }
 }
 

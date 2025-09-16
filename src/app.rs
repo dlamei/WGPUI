@@ -10,7 +10,12 @@ use winit::{
 };
 
 use crate::{
-    gpu::{WGPUHandle, Window, WindowId, WGPU}, mouse::MouseBtn, ui::{self, WidgetId, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, ClearScreen, Vertex, VertexPosCol
+    ClearScreen, Vertex, VertexPosCol,
+    gpu::{WGPU, WGPUHandle, Window, WindowId},
+    mouse::{self, MouseBtn},
+    rect::Rect,
+    ui::{self, WidgetId, WidgetOpt},
+    utils::{self, Duration, Instant, RGBA},
 };
 
 pub enum AppSetup {
@@ -35,7 +40,7 @@ impl Default for AppSetup {
 }
 
 fn load_window_icon() -> winit::window::Icon {
-    let icon_bytes = include_bytes!("icon2.png");
+    let icon_bytes = include_bytes!("../res/icon2.png");
     let img = image::load_from_memory(icon_bytes).unwrap().into_rgba8();
     let (width, height) = img.dimensions();
     let rgba = img.into_raw();
@@ -47,24 +52,26 @@ impl AppSetup {
         matches!(self, Self::Init(_))
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed_native(&mut self, event_loop: &ActiveEventLoop) {
-        // use winit::platform::windows::WindowAttributesExtWindows;
-
         if self.is_init() {
             return;
         }
 
-        let window = event_loop
-            .create_window(
-                WinitWindow::default_attributes()
-                    .with_title("Atlas")
-                    // .with_corner_preference(winit::platform::windows::CornerPreference::Round)
-                    // .with_decorations(false)
-                    .with_window_icon(Some(load_window_icon())),
-            )
-            .unwrap();
+        let mut attribs = WinitWindow::default_attributes()
+            .with_title("Atlas")
+            .with_decorations(false)
+            // .with_resizable(true)
+            .with_window_icon(Some(load_window_icon()));
+
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attribs =
+                attribs.with_corner_preference(winit::platform::windows::CornerPreference::Round);
+        }
+
+        let window = event_loop.create_window(attribs).unwrap();
 
         // self.window = Some(window_handle.clone());
 
@@ -155,9 +162,9 @@ impl AppSetup {
             use winit::platform::web::WindowExtWebSys;
             if let Some(receiver) = renderer_rec.as_mut() {
                 if let Ok(Some((wgpu, window))) = receiver.try_recv() {
-                    window.core.raw.set_prevent_default(false);
+                    window.core.borrow().raw.set_prevent_default(false);
                     window.request_redraw();
-                    let size = window.size();
+                    let size = window.window_size();
                     *self = Self::Init(App::new(wgpu, window));
                     let app = self.init_unwrap();
                     app.resize_main_window(size.x as u32, size.y as u32);
@@ -191,19 +198,17 @@ impl ApplicationHandler for AppSetup {
 }
 
 pub struct App {
-    ui: ui::State,
+    pub ui: ui::State,
 
-    dbg_wireframe: bool,
+    pub dbg_wireframe: bool,
+    pub mouse_pos: Vec2,
 
-    prev_frame_time: Instant,
-    delta_time: Duration,
+    pub prev_frame_time: Instant,
+    pub delta_time: Duration,
 
-    mouse_pos: Vec2,
-
-    wgpu: WGPUHandle,
-    // window: Window,
-    main_window: WindowId,
-    windows: HashMap<WindowId, Window>,
+    pub wgpu: WGPUHandle,
+    pub main_window: WindowId,
+    pub windows: HashMap<WindowId, Window>,
 }
 
 impl App {
@@ -228,23 +233,43 @@ impl App {
         self.windows.get(&id).unwrap()
     }
 
-
-    fn on_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         use WindowEvent as WE;
         // if self.window.id() != window_id {
         //     return;
-        // }
+        // // }
+        // let w_size = self.ui.window.window_size();
+        // let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
+
+        // let resize_dir = ui::is_in_resize_region(w_rect, self.mouse_pos, self.ui.resize_threshold);
+        // let mut dragging = false;
+
+        if !self.ui.window.is_decorated() {
+            // if let Some(dir) = resize_dir {
+            //     self.ui.set_cursor_icon(dir.as_cursor());
+            // } else if self.mouse_pos.y <= 40.0 {
+            //     dragging = true;
+            // }
+
+            // // TODO[NOTE]: a bit hacky
+            // if resize_dir.is_none() && self.ui.cursor_icon != mouse::CursorIcon::Default {
+            //     self.ui.set_cursor_icon(mouse::CursorIcon::Default);
+            // }
+        }
 
         match event {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
+                self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
                 // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
+            WE::CursorEntered { .. } => {
+                self.ui.cursor_in_window = true;
+            }
+            WE::CursorLeft { .. } => {
+                self.ui.cursor_in_window = true;
+            }
+
             WE::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
                 let pressed = match state {
@@ -254,14 +279,12 @@ impl App {
 
                 match button {
                     MouseButton::Left => {
-                        // NOTE: mimic dragging the title bar with snapping support
-                        // if pressed {
-                        //     self.window.drag_window();
-                        // }
                         self.ui.set_mouse_press(MouseBtn::Left, pressed);
                     }
-                    MouseButton::Right => self.ui.set_mouse_press(MouseBtn::Right, pressed),
                     MouseButton::Middle => self.ui.set_mouse_press(MouseBtn::Middle, pressed),
+                    MouseButton::Right => {
+                        self.ui.set_mouse_press(MouseBtn::Right, pressed);
+                    }
                     _ => (),
                 }
             }
@@ -277,7 +300,10 @@ impl App {
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
 
-                self.windows.get_mut(&id).unwrap().on_resize(width, height, &self.wgpu.device);
+                self.windows
+                    .get_mut(&id)
+                    .unwrap()
+                    .on_resize(width, height, &self.wgpu.device);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
@@ -287,14 +313,18 @@ impl App {
     fn on_update(&mut self) {
         let ui = &mut self.ui;
 
-        ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        // ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
         ui.start_frame();
 
-        ui.add_window("window");
+        ui.begin_window("Atlas");
+        ui.end_window();
+
+        ui.debug_window(self.delta_time);
+        // ui.add_window("window");
 
         // ui.begin_window();
 
-        for i in 0..3 {
+        for i in 0..1 {
             ui.begin_widget(
                 &format!("outer_{i}"),
                 WidgetOpt::new()
@@ -390,7 +420,6 @@ impl App {
             ui.end_widget();
         }
 
-        ui.debug_window(self.delta_time);
 
         ui.draw_dbg_wireframe = self.dbg_wireframe;
 
@@ -430,10 +459,10 @@ impl App {
 
         {
             let Some(mut target) = window.prepare_frame(&self.wgpu) else {
-                return
+                return;
             };
 
-            target.render(&ClearScreen(RGBA::PASTEL_MINT));
+            target.render(&ClearScreen(RGBA::rgba_f(0.0, 0.0, 0.0, 0.0)));
             target.render(&self.ui.draw);
         }
 
@@ -442,6 +471,9 @@ impl App {
     }
 
     fn resize_main_window(&mut self, w: u32, h: u32) {
-        self.windows.get_mut(&self.main_window).unwrap().on_resize(w, h, &self.wgpu.device);
+        self.windows
+            .get_mut(&self.main_window)
+            .unwrap()
+            .on_resize(w, h, &self.wgpu.device);
     }
 }

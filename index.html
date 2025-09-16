@@ -3,8 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link data-trunk rel="copy-file" href="../res/icon.png" />
-    <link rel="icon" type="image/png" href="../res/icon.png">
     <title>Atlas</title>
     <style>
       html, body, .root {
@@ -28,7 +26,7 @@
 
   <body>
     <script>
-      <!-- const MAX_DIM = 3840; --> 
+      const MAX_DIM = 3840; 
 
       function resizeCanvas() {
         const canvas = document.getElementById("canvas");
@@ -40,18 +38,18 @@
         const physW = Math.round(cssW * dpr);
         const physH = Math.round(cssH * dpr);
 
-        <!-- const finalW = physW > MAX_DIM ? MAX_DIM : physW; -->
-        <!-- const finalH = physH > MAX_DIM ? MAX_DIM : physH; -->
+        const finalW = physW > MAX_DIM ? MAX_DIM : physW;
+        const finalH = physH > MAX_DIM ? MAX_DIM : physH;
 
-        canvas.width  = physW;
-        canvas.height = physH;
+        canvas.width  = finalW;
+        canvas.height = finalH;
       }
 
       window.addEventListener("load",   resizeCanvas);
       window.addEventListener("resize", resizeCanvas);
     </script>
 
-    <link data-trunk rel="rust" href="../Cargo.toml" data-bin="wgpui" />
+    <link data-trunk rel="rust" href="Cargo.toml" data-bin="wgpui" />
 
     <div class="root">
       <canvas id="canvas" class="main-canvas"></canvas>
