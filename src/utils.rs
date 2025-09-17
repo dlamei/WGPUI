@@ -124,7 +124,6 @@ impl RGBA {
         Self { r, g, b, a }
     }
 
-
     fn srgb_to_linear_u8(u: u8) -> f32 {
         let srgb = u as f32 / 255.0;
         if srgb <= 0.04045 {

@@ -10,13 +10,25 @@ use winit::{
 };
 
 use crate::{
-    ClearScreen, Vertex, VertexPosCol,
-    gpu::{WGPU, WGPUHandle, Window, WindowId},
-    mouse::{self, MouseBtn},
-    rect::Rect,
-    ui::{self, WidgetId, WidgetOpt},
-    utils::{self, Duration, Instant, RGBA},
+    build, gpu::{self, WGPUHandle, Window, WindowId, WGPU}, mouse::{self, MouseBtn}, rect::Rect, ui::{self, WidgetId, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, Vertex, VertexPosCol
 };
+
+#[derive(Debug, Clone)]
+pub struct ClearScreen(pub RGBA);
+
+impl gpu::RenderPassHandle for ClearScreen {
+    const LABEL: &'static str = "clear_screen_pass";
+
+    fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
+        wgpu::LoadOp::Clear(self.0.into())
+    }
+
+    fn store_op(&self) -> wgpu::StoreOp {
+        wgpu::StoreOp::Store
+    }
+
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {}
+}
 
 pub enum AppSetup {
     UnInit {
@@ -319,7 +331,7 @@ impl App {
         ui.begin_window("Atlas");
         ui.end_window();
 
-        ui.debug_window(self.delta_time);
+        ui.add_debug_window(self.delta_time);
         // ui.add_window("window");
 
         // ui.begin_window();
@@ -419,7 +431,6 @@ impl App {
             ui.end_widget();
             ui.end_widget();
         }
-
 
         ui.draw_dbg_wireframe = self.dbg_wireframe;
 

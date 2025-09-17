@@ -26,71 +26,14 @@ pub struct VertexPosCol {
 
 pub(crate) use cosmic_text as ctext;
 
-// pub struct DbgTriangle {
-//     vertex_buffer: wgpu::Buffer,
-//     color: RGBA,
-// }
 
-// impl DbgTriangle {
-//     pub fn new(color: RGBA, wgpu: &WGPU) -> Self {
-//         let vertices = [
-//             VertexPosCol {
-//                 pos: [-0.5, -0.5, 0.0, 1.0].into(),
-//                 col: RGBA::RED,
-//             },
-//             VertexPosCol {
-//                 pos: [0.0, 0.5, 0.0, 1.0].into(),
-//                 col: RGBA::GREEN, // green
-//             },
-//             VertexPosCol {
-//                 pos: [0.5, -0.25, 0.0, 1.0].into(),
-//                 col: RGBA::BLUE, // blue
-//             },
-//         ];
-
-//         let vertex_buffer = wgpu
-//             .device
-//             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-//                 label: Some("debug_triangle_vertex_buffer"),
-//                 contents: bytemuck::cast_slice(&vertices),
-//                 usage: wgpu::BufferUsages::VERTEX,
-//             });
-
-//         Self {
-//             vertex_buffer,
-//             color,
-//         }
-//     }
-// }
-
-// impl RenderPassHandle for DbgTriangle {
-//     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
-//         wgpu::LoadOp::Load
-//     }
-
-//     fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-//         let col = ColorTint(self.color);
-//         // rpass.set_pipeline(&col.get_pipeline(wgpu));
-//         // rpass.set_pipeline(&col.get_vertex_pipeline::<ui::VertexRect>(wgpu));
-//         rpass.set_pipeline(&col.get_pipeline(&[(&VertexPosCol::desc(), "Vertex")], wgpu));
-//         rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-//         rpass.draw(0..3, 0..1);
-//     }
-// }
-
-#[derive(Debug, Clone)]
-pub struct ClearScreen(pub RGBA);
-
-impl gpu::RenderPassHandle for ClearScreen {
-    const LABEL: &'static str = "clear_screen_pass";
-
-    fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
-        wgpu::LoadOp::Clear(self.0.into())
-    }
-
-    fn store_op(&self) -> wgpu::StoreOp {
-        wgpu::StoreOp::Store
-    }
-
-    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {}
+macro_rules! build {
+    ($constructor:expr;  { $(. $field:ident = $value:expr;)* }) => {{
+        let mut obj = $constructor;
+        $(
+            obj.$field = $value;
+        )*
+        obj
+    }};
 }
+pub(crate) use build;
