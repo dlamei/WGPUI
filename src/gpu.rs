@@ -1063,6 +1063,7 @@ impl<'a> RenderTarget<'a> {
 
 pub type WindowId = winit::window::WindowId;
 
+#[derive(Debug)]
 pub struct WindowCore {
     pub surface: wgpu::Surface<'static>,
     pub width: u32,
@@ -1073,7 +1074,7 @@ pub struct WindowCore {
     pub raw: Box<winit::window::Window>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Window {
     pub id: WindowId,
     pub surface_present_mode: wgpu::PresentMode,
@@ -1112,11 +1113,16 @@ impl Window {
     }
 
     pub fn start_drag_resize_window(&self, dir: ui::Dir) {
+        if self.is_maximized() {
+            return;
+        }
+
         let res = self
             .core
             .borrow()
             .raw
             .drag_resize_window(dir.as_winit_resize());
+
         if let Err(e) = res {
             log::warn!("{e}");
         }
@@ -1127,6 +1133,11 @@ impl Window {
         if let Err(e) = res {
             log::warn!("{e}");
         }
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        let w = &self.core.borrow().raw;
+        w.is_maximized()
     }
 
     pub fn toggle_maximize(&self) {
@@ -1164,7 +1175,7 @@ impl Window {
         self.core.borrow().height
     }
 
-    pub fn on_resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
+    pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
         let mut core = self.core.borrow_mut();
         core.width = width.max(1);
         core.height = height.max(1);
@@ -1260,7 +1271,7 @@ impl Window {
 
     pub fn reconfigure(&mut self, device: &wgpu::Device) {
         let size = self.core.borrow().raw.inner_size();
-        self.on_resize(size.width, size.height, device)
+        self.resize(size.width, size.height, device)
     }
 
     /// returns false when unable to accquire the current surface texture

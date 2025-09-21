@@ -217,7 +217,7 @@ impl ApplicationHandler for AppSetup {
 
 pub struct App {
     pub ui: ui::State,
-    // pub ui2: ui2::State,
+    pub ui2: ui2::State,
 
     pub dbg_wireframe: bool,
     pub mouse_pos: Vec2,
@@ -238,7 +238,7 @@ impl App {
         windows.insert(main_window, window.clone());
         Self {
             ui: ui::State::new(wgpu.clone(), window.clone()),
-            // ui2: ui2::State::new(wgpu.clone(), window),
+            ui2: ui2::State::new(wgpu.clone(), window),
             dbg_wireframe: false,
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
@@ -281,6 +281,7 @@ impl App {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
                 self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+                self.ui2.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
                 // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
             WE::CursorEntered { .. } => {
@@ -300,10 +301,15 @@ impl App {
                 match button {
                     MouseButton::Left => {
                         self.ui.set_mouse_press(MouseBtn::Left, pressed);
+                        self.ui2.set_mouse_press(MouseBtn::Left, pressed);
                     }
-                    MouseButton::Middle => self.ui.set_mouse_press(MouseBtn::Middle, pressed),
+                    MouseButton::Middle => {
+                        self.ui.set_mouse_press(MouseBtn::Middle, pressed);
+                        self.ui2.set_mouse_press(MouseBtn::Middle, pressed);
+                    }
                     MouseButton::Right => {
                         self.ui.set_mouse_press(MouseBtn::Right, pressed);
+                        self.ui2.set_mouse_press(MouseBtn::Left, pressed);
                     }
                     _ => (),
                 }
@@ -323,7 +329,7 @@ impl App {
                 self.windows
                     .get_mut(&id)
                     .unwrap()
-                    .on_resize(width, height, &self.wgpu.device);
+                    .resize(width, height, &self.wgpu.device);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
@@ -331,121 +337,133 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        // self.ui2.start_ui();
-        // self.ui2.end_ui();
+        let ui = &mut self.ui2;
+        ui.draw_debug = self.dbg_wireframe;
+        ui.begin_frame();
 
-        let ui = &mut self.ui;
-
-        // ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-        ui.start_frame();
-
-        ui.begin_window("Atlas");
-        ui.end_window();
-
-        ui.add_debug_window(self.delta_time);
-        // ui.add_window("window");
-
-        // ui.begin_window();
-
-        for i in 0..1 {
-            ui.begin_widget(
-                &format!("outer_{i}"),
-                WidgetOpt::new()
-                    .draggable()
-                    .fill(RGBA::CARMINE)
-                    .corner_radius(40.0)
-                    .outline(RGBA::DARK_BLUE, 10.0)
-                    .padding(25.0)
-                    .size_fit(),
-            );
-
-            ui.add_label(&format!("window: {}", i + 1), 64.0);
-            ui.offset_cursor_y(24.0);
-
-            ui.begin_widget(
-                "content",
-                WidgetOpt::new()
-                    .fill(RGBA::INDIGO)
-                    .spacing(40.0)
-                    .padding(30.0)
-                    .size_min_fit()
-                    .size_max_px(1000.0, 1300.0)
-                    .size_fit()
-                    .resizable()
-                    .corner_radius(40.0),
-            );
-
-            static mut toggle: bool = false;
-
-            if ui.add_button("hello") {
-                unsafe {
-                    toggle = !toggle;
-                }
-            }
-
-            if unsafe { toggle } {
-                ui.begin_widget(
-                    "toggle_rect",
-                    WidgetOpt::new()
-                        .fill(RGBA::PASTEL_MINT)
-                        .padding(100.0)
-                        .size_px(200.0, 200.0),
-                );
-                ui.end_widget();
-            }
-
-            if ui.add_button("test") {
-                log::info!("test");
-            }
-
-            if ui.add_button("abcdefghijklmnopqrstuvwxyz") {
-                log::info!("abcdefghijklmnopqrstuvwxyz");
-            }
-
-            let (id, _) = ui.begin_widget(
-                "box 2",
-                WidgetOpt::new()
-                    .fill(RGBA::CARMINE)
-                    .spacing(40.0)
-                    .padding(10.0)
-                    .layout_h()
-                    .corner_radius(30.0)
-                    .size_fit(),
-            );
-
-            let (_, signal) = ui.begin_widget(
-                "green circle",
-                WidgetOpt::new()
-                    .fill(RGBA::GREEN)
-                    .clickable()
-                    .resizable()
-                    .corner_radius(100.0),
-            );
-
-            if signal.released() {
-                log::info!("inner rect released");
-            }
-
-            ui.end_widget();
-
-            let offset = ui[id].rect.height() / 2.0;
-            ui.offset_cursor_y(offset);
-            ui.set_next_placement_y(ui::Placement::Center);
-            // ui.set_next_widget_placement(ui::WidgetPlacement::Center);
-
-            if ui.add_button("hello world") {
-                log::info!("hello world");
-            }
-
-            ui.end_widget();
-
-            ui.end_widget();
-            ui.end_widget();
-        }
-
-        ui.draw_dbg_wireframe = self.dbg_wireframe;
+        ui.begin("Debug");
+        ui.button("test button");
+        ui.button("the quick brown fox jumps over the lazy dog");
+        ui.end();
 
         ui.end_frame();
+
+        // log::info!("");
+        // log::info!("item : {}", ui.hot_id);
+        // log::info!("panel: {}", ui.hot_panel_id);
+
+        // let ui = &mut self.ui;
+
+        // // ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        // ui.start_frame();
+
+        // ui.begin_window("Atlas");
+        // ui.end_window();
+
+        // ui.add_debug_window(self.delta_time);
+        // // ui.add_window("window");
+
+        // // ui.begin_window();
+
+        // for i in 0..1 {
+        //     ui.begin_widget(
+        //         &format!("outer_{i}"),
+        //         WidgetOpt::new()
+        //             .draggable()
+        //             .fill(RGBA::CARMINE)
+        //             .corner_radius(40.0)
+        //             .outline(RGBA::DARK_BLUE, 10.0)
+        //             .padding(25.0)
+        //             .size_fit(),
+        //     );
+
+        //     ui.add_label(&format!("window: {}", i + 1), 64.0);
+        //     ui.offset_cursor_y(24.0);
+
+        //     ui.begin_widget(
+        //         "content",
+        //         WidgetOpt::new()
+        //             .fill(RGBA::INDIGO)
+        //             .spacing(40.0)
+        //             .padding(30.0)
+        //             .size_min_fit()
+        //             .size_max_px(1000.0, 1300.0)
+        //             .size_fit()
+        //             .resizable()
+        //             .corner_radius(40.0),
+        //     );
+
+        //     static mut toggle: bool = false;
+
+        //     if ui.add_button("hello") {
+        //         unsafe {
+        //             toggle = !toggle;
+        //         }
+        //     }
+
+        //     if unsafe { toggle } {
+        //         ui.begin_widget(
+        //             "toggle_rect",
+        //             WidgetOpt::new()
+        //                 .fill(RGBA::PASTEL_MINT)
+        //                 .padding(100.0)
+        //                 .size_px(200.0, 200.0),
+        //         );
+        //         ui.end_widget();
+        //     }
+
+        //     if ui.add_button("test") {
+        //         log::info!("test");
+        //     }
+
+        //     if ui.add_button("abcdefghijklmnopqrstuvwxyz") {
+        //         log::info!("abcdefghijklmnopqrstuvwxyz");
+        //     }
+
+        //     let (id, _) = ui.begin_widget(
+        //         "box 2",
+        //         WidgetOpt::new()
+        //             .fill(RGBA::CARMINE)
+        //             .spacing(40.0)
+        //             .padding(10.0)
+        //             .layout_h()
+        //             .corner_radius(30.0)
+        //             .size_fit(),
+        //     );
+
+        //     let (_, signal) = ui.begin_widget(
+        //         "green circle",
+        //         WidgetOpt::new()
+        //             .fill(RGBA::GREEN)
+        //             .clickable()
+        //             .resizable()
+        //             .corner_radius(100.0),
+        //     );
+
+        //     if signal.double_clicked() {
+        //         log::info!("inner rect released");
+        //     }
+
+        //     ui.end_widget();
+
+        //     let offset = ui[id].rect.height() / 2.0;
+        //     ui.offset_cursor_y(offset);
+        //     ui.set_next_placement_y(ui::Placement::Center);
+        //     // ui.set_next_widget_placement(ui::WidgetPlacement::Center);
+
+        //     if ui.add_button("hello world") {
+        //         log::info!("hello world");
+        //     }
+
+        //     ui.end_widget();
+
+        //     ui.end_widget();
+        //     ui.end_widget();
+        // }
+
+        // ui.draw_dbg_wireframe = self.dbg_wireframe;
+
+        // ui.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
@@ -485,8 +503,8 @@ impl App {
             };
 
             target.render(&ClearScreen(RGBA::rgba_f(0.0, 0.0, 0.0, 0.0)));
-            target.render(&self.ui.draw);
-            // target.render(&self.ui2.draw);
+            // target.render(&self.ui.draw);
+            target.render(&self.ui2.draw);
         }
 
         window.present_frame();
@@ -497,6 +515,6 @@ impl App {
         self.windows
             .get_mut(&self.main_window)
             .unwrap()
-            .on_resize(w, h, &self.wgpu.device);
+            .resize(w, h, &self.wgpu.device);
     }
 }

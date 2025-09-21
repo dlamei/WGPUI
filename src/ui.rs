@@ -15,7 +15,7 @@ use std::{
 use crate::{
     RGBA, ctext,
     gpu::{self, ShaderHandle, Vertex as VertexTyp, VertexDesc, WGPU, WGPUHandle, Window},
-    mouse::{CursorIcon, MouseBtn, MouseRec},
+    mouse::{CursorIcon, MouseBtn, MouseRec, MouseState},
     rect::Rect,
     ui_draw::{DrawList, TextMeta},
     utils::{Duration, Instant},
@@ -925,7 +925,7 @@ pub enum Placement {
 }
 
 pub struct State {
-    pub mouse: MouseRec,
+    pub mouse: MouseState,
     pub frame_count: u64,
 
     pub widgets: FxHashMap<WidgetId, Widget>,
@@ -995,7 +995,7 @@ impl State {
             curr_widget_action: WidgetAction::None,
             hot_id: WidgetId::NULL,
             active_id: WidgetId::NULL,
-            mouse: MouseRec::new(),
+            mouse: MouseState::new(),
             frame_count: 0,
             widgets: FxHashMap::default(),
             id_stack: Vec::new(),
@@ -1017,28 +1017,38 @@ impl State {
         let w_size = self.window.window_size();
         let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
 
-        let resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+        let mut resize_dir = None;
+        if !self.window.is_maximized() {
+            resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+        }
+
         let lft_btn = button == MouseBtn::Left;
 
-        if !self.window.is_decorated() {
-            if press && lft_btn {
-                if let Some(dir) = resize_dir {
-                    self.curr_widget_action = WidgetAction::ResizeWindow { dir };
-                    self.window.start_drag_resize_window(dir)
-                } else if self.mouse.pos.y <= self.custom_tab_height {
-                    self.curr_widget_action = WidgetAction::DragWindow;
-                    self.window.start_drag_window()
-                }
-            }
+        if self.window.is_decorated() {
+            return;
+        }
 
-            if !press && lft_btn && self.curr_widget_action.is_window_action() {
-                self.curr_widget_action = WidgetAction::None;
+        if press && lft_btn {
+            if let Some(dir) = resize_dir {
+                self.curr_widget_action = WidgetAction::ResizeWindow { dir };
+                self.window.start_drag_resize_window(dir)
+            } else if self.mouse.pos.y <= self.custom_tab_height {
+                self.curr_widget_action = WidgetAction::DragWindow;
+                self.window.start_drag_window()
             }
+        }
+
+        if !press && lft_btn && self.curr_widget_action.is_window_action() {
+            self.curr_widget_action = WidgetAction::None;
         }
     }
 
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
         self.mouse.set_mouse_pos(x, y);
+
+        if self.window.is_maximized() || self.window.is_decorated() {
+            return;
+        }
 
         let w_size = self.window.window_size();
         let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
@@ -1049,7 +1059,6 @@ impl State {
         } else if self.cursor_icon.is_resize() {
             self.set_cursor_icon(CursorIcon::Default);
         }
-        // }
     }
 
     pub fn set_next_placement_x(&mut self, p: Placement) {
@@ -1311,7 +1320,8 @@ impl State {
         self.update_cursor_icon();
         self.cursor_icon_changed = false;
 
-        self.mouse.clear_released();
+        // self.mouse.clear_released();
+        self.mouse.end_frame();
 
         let active_root = self.get_root(self.active_id);
 
@@ -1514,7 +1524,7 @@ impl State {
 
     // TODO[NOTE]: moving a widget leads to its children being a frame behind
     fn handle_widget_action(&mut self) {
-        let m_start = self.mouse.drag_start(MouseBtn::Left);
+        let m_start = self.mouse.drag_start(MouseBtn::Left).unwrap_or(Vec2::NAN);
         let m_delta = self.mouse.pos - m_start;
 
         match self.curr_widget_action {
@@ -1681,13 +1691,13 @@ impl State {
                 signal |= Signals::DRAGGING_MIDDLE;
             }
 
-            if self.mouse.poll_released(MouseBtn::Left) {
+            if self.mouse.released(MouseBtn::Left) {
                 signal |= Signals::RELEASED_LEFT
             }
-            if self.mouse.poll_released(MouseBtn::Right) {
+            if self.mouse.released(MouseBtn::Right) {
                 signal |= Signals::RELEASED_RIGHT
             }
-            if self.mouse.poll_released(MouseBtn::Middle) {
+            if self.mouse.released(MouseBtn::Middle) {
                 signal |= Signals::RELEASED_MIDDLE
             }
         }

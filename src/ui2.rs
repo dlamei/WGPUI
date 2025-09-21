@@ -5,7 +5,8 @@ use glam::Vec2;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    gpu::{WGPUHandle, Window},
+    gpu::{WGPUHandle, Window, WindowId},
+    mouse::{MouseBtn, MouseState},
     rect::Rect,
     ui::Placement,
     ui_draw::{self, DrawBuffer, DrawList as DrawCalls, Vertex},
@@ -13,35 +14,69 @@ use crate::{
 };
 
 pub struct State {
-    pub mouse_pos: Vec2,
     pub panels: FxHashMap<Id, Panel>,
     pub draw: DrawCalls,
 
+    pub current_panel_stack: Vec<Id>,
+    pub current_panel: Id,
     pub draw_order: Vec<Id>,
+    pub last_item_data: Option<LastItemData>,
+
+    pub hot_id: Id,
+    pub hot_panel_id: Id,
     pub active_id: Id,
-    pub active_window_id: Id,
-    pub move_id: Id,
+    pub active_panel_id: Id,
+
+    pub moving_panel_data: Option<MovingPanelData>,
 
     pub frame_count: u64,
     pub draw_debug: bool,
+    pub mouse: MouseState,
 
     pub window: Window,
+}
+
+fn foo() {}
+
+macro_rules! get_curr_panel {
+    ($state:ident) => {
+        $state.panels.get(&$state.current_panel).unwrap()
+    };
+
+    (mut $state:ident) => {
+        $state.panels.get_mut(&$state.current_panel).unwrap()
+    };
 }
 
 impl State {
     pub fn new(wgpu: WGPUHandle, window: Window) -> Self {
         Self {
-            mouse_pos: Vec2::ZERO,
             panels: Default::default(),
             draw: ui_draw::DrawList::new(wgpu),
+            current_panel_stack: vec![],
+            current_panel: Id::NULL,
+            last_item_data: None,
+
+            hot_id: Id::NULL,
+            hot_panel_id: Id::NULL,
             active_id: Id::NULL,
-            active_window_id: Id::NULL,
-            move_id: Id::NULL,
-            window,
+            active_panel_id: Id::NULL,
+            moving_panel_data: None,
+
             draw_order: Vec::new(),
             draw_debug: false,
             frame_count: 0,
+            mouse: MouseState::new(),
+            window,
         }
+    }
+
+    pub fn set_mouse_press(&mut self, btn: MouseBtn, press: bool) {
+        self.mouse.set_button_press(btn, press);
+    }
+
+    pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
+        self.mouse.set_mouse_pos(x, y);
     }
 
     pub fn begin(&mut self, name: &str) {
@@ -52,6 +87,9 @@ impl State {
             newly_created = true;
         }
 
+        self.current_panel_stack.push(id);
+        self.current_panel = id;
+
         let p = self.panels.get_mut(&id).unwrap();
         if newly_created {
             p.draw_order = self.draw_order.len();
@@ -59,13 +97,140 @@ impl State {
         }
         // let first_begin_this_frame = p.last_frame_used == self.frame_count;
         p.last_frame_used = self.frame_count;
+        p.draw_list.clear();
+        p.id_stack.push(p.id);
+        p.tmp.root = p.id;
+
+        let prev_max_pos = p.tmp.cursor_max_pos;
+
+        p.tmp.cursor_content_start_pos =
+            p.pos + Vec2::new(p.padding, p.padding + p.titlebar_height);
+        p.tmp.cursor_pos = p.tmp.cursor_content_start_pos;
+        p.tmp.cursor_max_pos = p.tmp.cursor_pos;
+
+        // preserve when?
+        p.content_size = prev_max_pos - p.tmp.cursor_content_start_pos;
+        p.full_size = prev_max_pos - p.pos;
+        let panel_rect = Rect::from_min_size(p.pos, p.full_size);
+
+        let curr_draw_order = p.draw_order;
+        if panel_rect.contains(self.mouse.pos) {
+            if self.hot_panel_id.is_null()
+                || self.panels.get(&self.hot_panel_id).unwrap().draw_order < curr_draw_order
+            {
+                self.hot_panel_id = id;
+            }
+        }
+
+        let p = self.panels.get_mut(&id).unwrap();
+        // bg
+        p.draw_list.add_rect(
+            p.pos,
+            p.pos + p.full_size,
+            Some(p.fill_color),
+            None,
+            &[10.0],
+        );
+        // titlebar
+        let tb_id = p.gen_id("#MOVE");
+        p.move_id = tb_id;
+        p.draw_list.add_rect(
+            p.pos,
+            p.pos + Vec2::new(p.full_size.x, p.titlebar_height),
+            Some(RGBA::WHITE),
+            None,
+            &[10.0, 10.0, 0.0, 0.0],
+        );
+        let tb_rect = Rect::from_min_size(p.pos, Vec2::new(p.full_size.x, p.titlebar_height));
+        self.add_item(tb_id, tb_rect);
+    }
+
+    pub fn end(&mut self) {
+        let p = get_curr_panel!(mut self);
+        p.id_stack.pop().unwrap();
+        if !p.id_stack.is_empty() {
+            log::warn!("non empty id stack at ");
+        }
+        p.tmp.cursor_max_pos += Vec2::splat(p.padding);
+
+        self.current_panel_stack.pop();
+        self.current_panel = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
+    }
+
+    pub fn button(&mut self, label: &str) {
+        let p = get_curr_panel!(mut self);
+        let id = p.gen_id(label);
+        let size = Vec2::new(label.len() as f32 * 12.0, 12.0);
+        let rect = Rect::from_min_size(p.tmp.cursor_pos, size);
+        p.draw_list
+            .add_rect(rect.min, rect.max, Some(RGBA::PASTEL_MINT), None, &[]);
+        self.add_item(id, rect);
+        self.add_item_size(size);
+    }
+
+    pub fn add_item_size(&mut self, size: Vec2) {
+        let p = get_curr_panel!(mut self);
+        let rect = Rect::from_min_size(p.tmp.cursor_pos, size);
+        p.tmp.cursor_max_pos = p.tmp.cursor_max_pos.max(rect.max);
+        p.tmp.cursor_pos.y += size.y;
+    }
+
+    pub fn is_active_captured(&self) -> bool {
+        self.moving_panel_data.is_some()
+    }
+
+    pub fn add_item(&mut self, id: Id, rect: Rect) {
+        let p = get_curr_panel!(mut self);
+
+        if self.last_item_data.is_some() {
+            p.tmp.cursor_pos.y += p.spacing;
+        }
+
+        if rect.contains(self.mouse.pos) {
+            if self.hot_panel_id.is_null() || self.hot_panel_id == p.id
+            {
+                self.hot_id = id;
+            }
+        }
+
+        if self.mouse.pressed(MouseBtn::Left) && self.moving_panel_data.is_none() {
+            self.active_id = self.hot_id;
+            self.active_panel_id = self.hot_panel_id;
+        }
+
+        if self.active_id == p.move_id  {
+            if self.mouse.dragging(MouseBtn::Left) && self.moving_panel_data.is_none() {
+                self.moving_panel_data = Some(MovingPanelData { 
+                    panel_id: p.tmp.root,
+                    pre_pos: p.pos,
+                })
+            } 
+            if !self.mouse.dragging(MouseBtn::Left) {
+                self.moving_panel_data = None;
+            }
+
+            if let Some(MovingPanelData { panel_id, pre_pos }) = self.moving_panel_data {
+                let drag_start = self.mouse.drag_start(MouseBtn::Left).unwrap();
+                let delta = pre_pos - drag_start;
+                p.pos = self.mouse.pos + delta;
+            }
+        }
+
+
+        // // debug
+        // {
+        //     p.draw_list.add_rect(rect.min, rect.max, Some(RGBA::CARMINE), None, 0.0);
+        // }
+
+        self.last_item_data = Some(LastItemData { id, rect });
     }
 
     pub fn create_panel(&mut self, name: &str) -> Id {
-        let mut f = Panel::new(name);
-        let id = f.id;
-        f.frame_created = self.frame_count;
-        self.panels.insert(id, f);
+        let mut p = Panel::new(name);
+        let id = p.id;
+        p.window = self.window.id;
+        p.frame_created = self.frame_count;
+        self.panels.insert(id, p);
         id
     }
 
@@ -82,7 +247,7 @@ impl State {
         self.panels.get_mut(&id).unwrap()
     }
 
-    pub fn brin_panel_to_front(&mut self, panel_id: Id) {
+    pub fn bring_panel_to_front(&mut self, panel_id: Id) {
         let p = &self.panels[&panel_id];
         assert!(p.tmp.root == panel_id);
         let curr_order = p.draw_order;
@@ -102,15 +267,19 @@ impl State {
         self.get_panel_mut(panel_id).draw_order = new_order;
     }
 
-    pub fn start_ui(&mut self) {
+    pub fn begin_frame(&mut self) {
         self.draw.clear();
         self.draw.screen_size = self.window.window_size();
+        self.hot_panel_id = Id::NULL;
+        self.hot_id = Id::NULL;
     }
 
-    pub fn end_ui(&mut self) {
+    pub fn end_frame(&mut self) {
         assert!(!self.panels.contains_key(&Id::NULL));
         self.build_draw_data();
         self.frame_count += 1;
+        self.mouse.end_frame();
+        self.last_item_data = None;
     }
 
     pub fn build_draw_data(&mut self) {
@@ -131,17 +300,26 @@ impl State {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Panel {
     pub name: String,
     pub id: Id,
+    pub move_id: Id,
+
+    pub fill_color: RGBA,
+    pub padding: f32,
+    pub spacing: f32,
+    pub size: Vec2,
+    pub pos: Vec2,
+    pub full_size: Vec2,
+    pub content_size: Vec2,
+    pub titlebar_height: f32,
+
+    pub draw_list: DrawList,
     pub id_stack: Vec<Id>,
     pub draw_order: usize,
 
-    pub size: Vec2,
-    pub pos: Vec2,
-
-    pub draw_list: DrawList,
+    pub window: WindowId,
 
     pub last_frame_used: u64,
     pub frame_created: u64,
@@ -152,11 +330,19 @@ pub struct Panel {
 impl Panel {
     pub fn new(name: &str) -> Self {
         Self {
+            content_size: Vec2::ZERO,
+            full_size: Vec2::ZERO,
             draw_order: 0,
+            fill_color: RGBA::INDIGO,
+            titlebar_height: 30.0,
             name: name.to_string(),
             id: Id::from_str(name),
+            move_id: Id::NULL,
+            padding: 20.0,
+            spacing: 10.0,
+            window: WindowId::dummy(),
             size: Vec2::ZERO,
-            pos: Vec2::ZERO,
+            pos: Vec2::splat(30.0),
             frame_created: 0,
             last_frame_used: 0,
             draw_list: DrawList::new(),
@@ -200,8 +386,8 @@ flags! {
 pub struct TempPanelData {
     pub root: Id,
     pub parent: Id,
-    pub child_frames: Vec<Id>,
 
+    pub cursor_content_start_pos: Vec2,
     pub cursor_pos: Vec2,
     pub cursor_max_pos: Vec2,
 }
@@ -216,13 +402,24 @@ pub struct NextPanelData {
     pub content_size: Option<Vec2>,
 }
 
-impl NextPanelData {
-}
+impl NextPanelData {}
 
 // pub enum CondFlag {
 //     Once,
 //     Always,
 // }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MovingPanelData {
+    pub panel_id: Id,
+    pub pre_pos: Vec2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LastItemData {
+    pub id: Id,
+    pub rect: Rect,
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(u64);
@@ -303,6 +500,13 @@ impl DrawList {
         Self::default()
     }
 
+    pub fn clear(&mut self) {
+        self.vtx_buffer.clear();
+        self.idx_buffer.clear();
+        self.cmd_buffer.clear();
+        self.path.clear();
+    }
+
     pub fn curr_draw_cmd(&mut self) -> &mut DrawCmd {
         if self.cmd_buffer.is_empty() {
             self.cmd_buffer.push(DrawCmd::default())
@@ -366,15 +570,15 @@ impl DrawList {
         self.add_rect_impl(min, max, RGBA::WHITE, uv_min, uv_max, tex_id);
     }
 
-    pub fn add_rect_rounded(
+    pub fn add_rect(
         &mut self,
         min: Vec2,
         max: Vec2,
         fill: Option<RGBA>,
         outline: Option<(RGBA, f32)>,
-        round: f32,
+        round: &[f32],
     ) {
-        if round < 0.5 {
+        if round.is_empty() {
             if let Some(fill) = fill {
                 self.add_rect_impl(min, max, fill, Vec2::ZERO, Vec2::ZERO, 0);
             }
@@ -409,42 +613,56 @@ impl DrawList {
         self.path.push(p);
     }
 
-    pub fn path_rect(&mut self, min: Vec2, max: Vec2, rad: f32) {
+    pub fn path_rect(&mut self, min: Vec2, max: Vec2, corner_radii: &[f32]) {
         const PI: f32 = std::f32::consts::PI;
-        let rounded = rad != 0.0;
+        let r = corner_radii;
 
-        self.path_to(Vec2::new(min.x + rad, min.y));
-        self.path_to(Vec2::new(max.x - rad, min.y));
-        if rounded {
-            self.path_arc(
-                Vec2::new(max.x - rad, min.y + rad),
-                rad,
-                PI / 2.0,
-                -PI / 2.0,
-            );
+        let r0;
+        let r1;
+        let r2;
+        let r3;
+
+        if r.is_empty() {
+            r0 = 0.0;
+            r1 = 0.0;
+            r2 = 0.0;
+            r3 = 0.0;
+        } else if r.len() == 1 {
+            r0 = r[0];
+            r1 = r[0];
+            r2 = r[0];
+            r3 = r[0];
+        } else {
+            assert!(r.len() == 4);
+            r0 = if r[0] >= 0.5 { r[0] } else { 0.0 }; // top-left
+            r1 = if r[1] >= 0.5 { r[1] } else { 0.0 }; // top-right
+            r2 = if r[2] >= 0.5 { r[2] } else { 0.0 }; // bottom-right
+            r3 = if r[3] >= 0.5 { r[3] } else { 0.0 }; // bottom-left
         }
 
-        self.path_to(Vec2::new(max.x, min.y + rad));
-        self.path_to(Vec2::new(max.x, max.y - rad));
-        if rounded {
-            self.path_arc(Vec2::new(max.x - rad, max.y - rad), rad, 0.0, -PI / 2.0);
+        self.path_to(Vec2::new(min.x + r0, min.y));
+
+        self.path_to(Vec2::new(max.x - r1, min.y));
+        if r1 > 0.0 {
+            self.path_arc(Vec2::new(max.x - r1, min.y + r1), r1, PI / 2.0, -PI / 2.0);
         }
 
-        self.path_to(Vec2::new(max.x - rad, max.y));
-        self.path_to(Vec2::new(min.x + rad, max.y));
-        if rounded {
-            self.path_arc(
-                Vec2::new(min.x + rad, max.y - rad),
-                rad,
-                -PI / 2.0,
-                -PI / 2.0,
-            );
+        self.path_to(Vec2::new(max.x, min.y + r1));
+        self.path_to(Vec2::new(max.x, max.y - r2));
+        if r2 > 0.0 {
+            self.path_arc(Vec2::new(max.x - r2, max.y - r2), r2, 0.0, -PI / 2.0);
         }
 
-        self.path_to(Vec2::new(min.x, max.y - rad));
-        self.path_to(Vec2::new(min.x, min.y + rad));
-        if rounded {
-            self.path_arc(Vec2::new(min.x + rad, min.y + rad), rad, PI, -PI / 2.0);
+        self.path_to(Vec2::new(max.x - r2, max.y));
+        self.path_to(Vec2::new(min.x + r3, max.y));
+        if r3 > 0.0 {
+            self.path_arc(Vec2::new(min.x + r3, max.y - r3), r3, -PI / 2.0, -PI / 2.0);
+        }
+
+        self.path_to(Vec2::new(min.x, max.y - r3));
+        self.path_to(Vec2::new(min.x, min.y + r0));
+        if r0 > 0.0 {
+            self.path_arc(Vec2::new(min.x + r0, min.y + r0), r0, PI, -PI / 2.0);
         }
     }
 
