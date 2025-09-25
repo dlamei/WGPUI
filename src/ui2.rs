@@ -21,6 +21,7 @@ use crate::{
 pub struct Context {
     // pub panels: HashMap<Id, Panel>,
     pub panels: PanelMap,
+    pub style: Style,
 
     pub current_panel_stack: Vec<Id>,
     pub current_panel: Id,
@@ -81,6 +82,7 @@ impl Context {
         font_table.load_font("Roboto", include_bytes!("../res/Roboto.ttf").to_vec());
         Self {
             panels: Default::default(),
+            style: Style::dark(),
             draw: MergedDrawLists::new(glyph_cache.texture.clone(), wgpu),
             current_panel_stack: vec![],
             current_panel: Id::NULL,
@@ -322,13 +324,10 @@ impl Context {
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
             // titlebar
             p.draw(|list| {
-                list.add_rect(
-                    panel_pos,
-                    panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
-                    Some(RGBA::hex("#202020")),
-                    None,
-                    &[corner_rad, corner_rad, 0.0, 0.0],
-                )
+                list.rect(panel_pos, panel_pos + Vec2::new(panel_size.x, p.titlebar_height))
+                    .fill(self.style.titlebar_color)
+                    .radii([corner_rad, corner_rad, 0.0, 0.0])
+                    .draw()
             });
             // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
             let prev_pos = self.cursor_pos();
@@ -1040,16 +1039,6 @@ impl Panel {
 flags!(ItemFlags: RAW);
 flags!(PanelFlags: NO_TITLEBAR, NO_FOCUS, NO_MOVE);
 
-#[derive(Debug, Clone)]
-pub struct MutPanelData {
-    pub draw_list: RefCell<DrawList>,
-    pub id_stack: RefCell<Vec<Id>>,
-    pub cursor: RefCell<Cursor>,
-    // pub cursor_content_start_pos: Vec2,
-    // pub cursor_pos: Vec2,
-    // pub cursor_max_pos: Vec2,
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Cursor {
     pub pos: Vec2,
@@ -1057,27 +1046,24 @@ pub struct Cursor {
     pub content_start_pos: Vec2,
 }
 
-macro_rules! cursor_fn {
-    ($fn:ident( $($e:expr),* )) => {};
+// TODO[NOTE]: finish impl
+#[allow(non_camel_case_types)]
+pub enum StyleVar {
+    pos(Vec2),
 }
 
-impl MutPanelData {
-    pub fn new() -> Self {
-        Self {
-            // root: Id::NULL,
-            draw_list: DrawList::new().into(),
-            id_stack: Vec::new().into(),
-            cursor: Cursor {
-                pos: Vec2::ZERO,
-                max_pos: Vec2::ZERO,
-                content_start_pos: Vec2::ZERO,
-            }
-            .into(),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Style {
+    pub titlebar_color: RGBA,
+    pub titlebar_height: f32,
+}
 
-    pub fn clear(&mut self) {
-        *self = Self::new();
+impl Style {
+    pub fn dark() -> Self {
+        Self {
+            titlebar_color: RGBA::hex("#202020"),
+            titlebar_height: 40.0,
+        }
     }
 }
 
@@ -1989,314 +1975,8 @@ pub enum OutlinePlacement {
     Inner,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GlyphMeta {
-    pub pos: Vec2,
-    pub size: Vec2,
-    pub uv_min: Vec2,
-    pub uv_max: Vec2,
-}
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Glyph {
-    pub texture: gpu::Texture,
-    pub meta: GlyphMeta,
-}
-
-#[derive(Debug, Clone)]
-pub struct ShapedText {
-    pub glyphs: Vec<Glyph>,
-    pub width: f32,
-    pub height: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TextItem {
-    // pub font: FontId,
-    pub font: &'static str,
-    pub string: String,
-    pub font_size_i: u64,
-    pub line_height_i: u64,
-    pub width_i: Option<u64>,
-    pub height_i: Option<u64>,
-}
-
-pub type TextItemCache = HashMap<TextItem, ShapedText>;
-
-pub type FontId = u64;
-
-pub struct FontTable {
-    pub id_to_name: Vec<(FontId, String)>,
-    pub sys: ctext::FontSystem,
-}
-
-impl FontTable {
-    pub fn new() -> Self {
-        Self {
-            id_to_name: Default::default(),
-            sys: ctext::FontSystem::new(),
-        }
-    }
-    pub fn load_font(&mut self, name: &str, bytes: Vec<u8>) -> FontId {
-        use hash::{Hash, Hasher};
-        let db = self.sys.db_mut();
-        let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
-        let mut hasher = ahash::AHasher::default();
-        ids.hash(&mut hasher);
-        name.hash(&mut hasher);
-        let id = hasher.finish();
-        self.id_to_name.push((id, name.to_string()));
-        id
-    }
-
-    pub fn get_font_attrib<'a>(&self, name: &'a str) -> ctext::Attrs<'a> {
-        // let name = self.id_to_name.get(&id).unwrap();
-        let attribs = ctext::Attrs::new().family(ctext::Family::Name(name));
-        attribs
-    }
-}
-
-fn shape_text_item(
-    itm: TextItem,
-    fonts: &mut FontTable,
-    cache: &mut GlyphCache,
-    wgpu: &WGPU,
-) -> ShapedText {
-    let mut buffer = ctext::Buffer::new(
-        &mut fonts.sys,
-        ctext::Metrics {
-            font_size: itm.font_size(),
-            line_height: itm.scaled_line_height(),
-        },
-    );
-
-    let font_attrib = fonts.get_font_attrib(itm.font);
-    buffer.set_size(&mut fonts.sys, itm.width(), itm.height());
-    buffer.set_text(
-        &mut fonts.sys,
-        &itm.string,
-        &font_attrib,
-        ctext::Shaping::Advanced,
-    );
-    buffer.shape_until_scroll(&mut fonts.sys, false);
-
-    let mut glyphs = Vec::new();
-    let mut width = 0.0;
-    let mut height = 0.0;
-
-    for run in buffer.layout_runs() {
-        width = run.line_w.max(width);
-        // TODO[CHECK]: is it the sum?
-        height = run.line_height.max(height);
-        // height += run.line_height;
-
-        for g in run.glyphs {
-            let g_phys = g.physical((0.0, 0.0), 1.0);
-            let mut key = g_phys.cache_key;
-            // TODO[CHECK]: what does this do
-            key.x_bin = ctext::SubpixelBin::Three;
-            key.y_bin = ctext::SubpixelBin::Three;
-
-            if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
-                glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
-                glyphs.push(glyph);
-            }
-        }
-    }
-
-    let text = ShapedText {
-        glyphs,
-        width,
-        height,
-    };
-    text
-}
-
-impl TextItem {
-    pub const RESOLUTION: f32 = 1024.0;
-
-    pub fn new(text: String, font_size: f32, line_height: f32, font: &'static str) -> Self {
-        Self {
-            font,
-            string: text,
-            font_size_i: (font_size * Self::RESOLUTION) as u64,
-            line_height_i: (line_height * Self::RESOLUTION) as u64,
-            width_i: None,
-            height_i: None,
-        }
-    }
-
-    pub fn with_width(mut self, width: f32) -> Self {
-        self.width_i = Some((width * Self::RESOLUTION) as u64);
-        self
-    }
-
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height_i = Some((height * Self::RESOLUTION) as u64);
-        self
-    }
-
-    pub fn width(&self) -> Option<f32> {
-        self.width_i.map(|w| w as f32 / Self::RESOLUTION)
-    }
-
-    pub fn height(&self) -> Option<f32> {
-        self.height_i.map(|h| h as f32 / Self::RESOLUTION)
-    }
-
-    pub fn line_height(&self) -> f32 {
-        self.line_height_i as f32 / Self::RESOLUTION
-    }
-
-    pub fn font_size(&self) -> f32 {
-        self.font_size_i as f32 / Self::RESOLUTION
-    }
-
-    pub fn scaled_line_height(&self) -> f32 {
-        self.line_height() * self.font_size()
-    }
-}
-
-pub struct GlyphCache {
-    pub texture: gpu::Texture,
-    pub alloc: etagere::BucketedAtlasAllocator,
-    pub size: u32,
-    pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
-    pub swash_cache: ctext::SwashCache,
-}
-
-impl GlyphCache {
-    pub fn new(wgpu: &WGPU) -> Self {
-        const SIZE: u32 = 1024;
-        let size = SIZE.min(wgpu.device.limits().max_texture_dimension_2d);
-
-        let texture = wgpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph_cache_texture"),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let alloc =
-            etagere::BucketedAtlasAllocator::new(etagere::Size::new(size as i32, size as i32));
-        let texture = gpu::Texture::new(texture, texture_view);
-
-        Self {
-            texture,
-            alloc,
-            size,
-            cached_glyphs: Default::default(),
-            swash_cache: ctext::SwashCache::new(),
-        }
-    }
-
-    pub fn get_glyph(
-        &mut self,
-        glyph_key: ctext::CacheKey,
-        fonts: &mut FontTable,
-        wgpu: &WGPU,
-    ) -> Option<Glyph> {
-        if let Some(&meta) = self.cached_glyphs.get(&glyph_key) {
-            return Some(Glyph {
-                texture: self.texture.clone(),
-                meta,
-            });
-        }
-
-        self.alloc_new_glyph(glyph_key, fonts, wgpu)
-    }
-
-    pub fn alloc_new_glyph(
-        &mut self,
-        glyph_key: ctext::CacheKey,
-        fonts: &mut FontTable,
-        wgpu: &WGPU,
-    ) -> Option<Glyph> {
-        let img = self
-            .swash_cache
-            .get_image_uncached(&mut fonts.sys, glyph_key)?;
-        let x = img.placement.left;
-        let y = img.placement.top;
-        let w = img.placement.width;
-        let h = img.placement.height;
-
-        let (has_color, data) = match img.content {
-            ctext::SwashContent::Mask => {
-                let mut data = Vec::new();
-                data.reserve_exact((w * h * 4) as usize);
-                for val in img.data {
-                    data.push(255);
-                    data.push(255);
-                    data.push(255);
-                    data.push(val);
-                }
-                (false, data)
-            }
-            ctext::SwashContent::Color => (true, img.data),
-            ctext::SwashContent::SubpixelMask => {
-                unimplemented!()
-            }
-        };
-
-        let rect = self
-            .alloc
-            .allocate(etagere::Size::new(w as i32, h as i32))?
-            .rectangle;
-
-        wgpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfoBase {
-                texture: &self.texture.raw(),
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: rect.min.x as u32,
-                    y: rect.min.y as u32,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * w),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let tex_size = self.texture.width();
-        assert!(self.texture.height() == tex_size);
-        let pos = Vec2::new(x as f32, -y as f32);
-        let size = Vec2::new(w as f32, h as f32);
-        let uv_min = Vec2::new(rect.min.x as f32, rect.min.y as f32) / tex_size as f32;
-        let uv_max = uv_min + size / tex_size as f32;
-
-        let meta = GlyphMeta {
-            pos,
-            size,
-            uv_min,
-            uv_max,
-        };
-        self.cached_glyphs.insert(glyph_key, meta);
-
-        Some(Glyph {
-            texture: self.texture.clone(),
-            meta,
-        })
-    }
-}
+/* DRAW STUFF */
 
 pub struct MergedDrawLists {
     pub gpu_vertices: wgpu::Buffer,
@@ -2312,13 +1992,6 @@ pub struct MergedDrawLists {
 
     pub wgpu: WGPUHandle,
 }
-
-// fn vtx(pos: impl Into<Vec2>, col: impl Into<RGBA>) -> Vertex {
-//     Vertex {
-//         pos: pos.into(),
-//         col: col.into(),
-//     }
-// }
 
 impl MergedDrawLists {
     /// 2^16
@@ -2403,129 +2076,6 @@ impl RenderPassHandle for MergedDrawLists {
     }
 }
 
-pub struct UiShader;
-
-impl gpu::ShaderHandle for UiShader {
-    const RENDER_PIPELINE_ID: gpu::ShaderID = "ui_shader";
-
-    fn build_pipeline(&self, desc: &gpu::ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
-        const SHADER_SRC: &str = r#"
-
-
-            @rust struct Vertex {
-                pos: vec2<f32>,
-                uv: vec2<f32>,
-                col: vec4<f32>,
-                tex: u32,
-                ...
-            }
-
-            struct GlobalUniform {
-                screen_size: vec2<f32>,
-                _pad: vec2<f32>,
-                proj: mat4x4<f32>,
-            }
-
-            @group(0) @binding(0)
-            var<uniform> global: GlobalUniform;
-
-            struct VSOut {
-                @builtin(position) pos: vec4<f32>,
-                @location(0) color: vec4<f32>,
-                @location(1) uv: vec2<f32>,
-                @location(2) @interpolate(flat) tex: u32,
-            };
-
-            @vertex
-            fn vs_main(
-                v: Vertex,
-            ) -> VSOut {
-                var out: VSOut;
-
-                out.color = v.col;
-                out.uv = v.uv;
-                out.tex = v.tex;
-
-                out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
-                return out;
-            }
-
-
-            @group(0) @binding(1)
-            var samp: sampler;
-            @group(0) @binding(2)
-            var texture: texture_2d<f32>;
-
-
-            @fragment
-            fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-                let c0 = textureSample(texture, samp, in.uv) * in.color;
-                let c1 = in.color;
-                return select(c0, c1, in.tex != 1);
-            }
-            "#;
-
-        let bind_group_entries = [
-            // global uniform
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // sampler
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            // texture
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ];
-
-        let global_bind_group_layout =
-            wgpu.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &bind_group_entries,
-                    label: Some("global_bind_group_layout"),
-                });
-
-        let shader_src = gpu::pre_process_shader_code(SHADER_SRC, &desc).unwrap();
-        let vertices = desc.iter().map(|d| d.0).collect::<Vec<_>>();
-        gpu::PipelineBuilder::new(&shader_src, wgpu.surface_format)
-            .label("rect_pipeline")
-            .vertex_buffers(&vertices)
-            .bind_groups(&[&global_bind_group_layout])
-            .blend_state(Some(wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::SrcAlpha,
-                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            }))
-            .sample_count(1)
-            .build(&wgpu.device)
-    }
-}
 
 /// Represents a contiguous segment of vertex and index data
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2722,5 +2272,445 @@ impl DrawRect<'_> {
             self.outline,
             &self.corner_radii,
         )
+    }
+}
+
+
+/* TEXT STUFF */
+
+pub type TextItemCache = HashMap<TextItem, ShapedText>;
+pub type FontId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphMeta {
+    pub pos: Vec2,
+    pub size: Vec2,
+    pub uv_min: Vec2,
+    pub uv_max: Vec2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glyph {
+    pub texture: gpu::Texture,
+    pub meta: GlyphMeta,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShapedText {
+    pub glyphs: Vec<Glyph>,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextItem {
+    // pub font: FontId,
+    pub font: &'static str,
+    pub string: String,
+    pub font_size_i: u64,
+    pub line_height_i: u64,
+    pub width_i: Option<u64>,
+    pub height_i: Option<u64>,
+}
+
+
+pub struct FontTable {
+    pub id_to_name: Vec<(FontId, String)>,
+    pub sys: ctext::FontSystem,
+}
+
+
+pub struct GlyphCache {
+    pub texture: gpu::Texture,
+    pub alloc: etagere::BucketedAtlasAllocator,
+    pub size: u32,
+    pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
+    pub swash_cache: ctext::SwashCache,
+}
+
+
+impl FontTable {
+    pub fn new() -> Self {
+        Self {
+            id_to_name: Default::default(),
+            sys: ctext::FontSystem::new(),
+        }
+    }
+    pub fn load_font(&mut self, name: &str, bytes: Vec<u8>) -> FontId {
+        use hash::{Hash, Hasher};
+        let db = self.sys.db_mut();
+        let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
+        let mut hasher = ahash::AHasher::default();
+        ids.hash(&mut hasher);
+        name.hash(&mut hasher);
+        let id = hasher.finish();
+        self.id_to_name.push((id, name.to_string()));
+        id
+    }
+
+    pub fn get_font_attrib<'a>(&self, name: &'a str) -> ctext::Attrs<'a> {
+        // let name = self.id_to_name.get(&id).unwrap();
+        let attribs = ctext::Attrs::new().family(ctext::Family::Name(name));
+        attribs
+    }
+}
+
+fn shape_text_item(
+    itm: TextItem,
+    fonts: &mut FontTable,
+    cache: &mut GlyphCache,
+    wgpu: &WGPU,
+) -> ShapedText {
+    let mut buffer = ctext::Buffer::new(
+        &mut fonts.sys,
+        ctext::Metrics {
+            font_size: itm.font_size(),
+            line_height: itm.scaled_line_height(),
+        },
+    );
+
+    let font_attrib = fonts.get_font_attrib(itm.font);
+    buffer.set_size(&mut fonts.sys, itm.width(), itm.height());
+    buffer.set_text(
+        &mut fonts.sys,
+        &itm.string,
+        &font_attrib,
+        ctext::Shaping::Advanced,
+    );
+    buffer.shape_until_scroll(&mut fonts.sys, false);
+
+    let mut glyphs = Vec::new();
+    let mut width = 0.0;
+    let mut height = 0.0;
+
+    for run in buffer.layout_runs() {
+        width = run.line_w.max(width);
+        // TODO[CHECK]: is it the sum?
+        height = run.line_height.max(height);
+        // height += run.line_height;
+
+        for g in run.glyphs {
+            let g_phys = g.physical((0.0, 0.0), 1.0);
+            let mut key = g_phys.cache_key;
+            // TODO[CHECK]: what does this do
+            key.x_bin = ctext::SubpixelBin::Three;
+            key.y_bin = ctext::SubpixelBin::Three;
+
+            if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
+                glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
+                glyphs.push(glyph);
+            }
+        }
+    }
+
+    let text = ShapedText {
+        glyphs,
+        width,
+        height,
+    };
+    text
+}
+
+impl TextItem {
+    pub const RESOLUTION: f32 = 1024.0;
+
+    pub fn new(text: String, font_size: f32, line_height: f32, font: &'static str) -> Self {
+        Self {
+            font,
+            string: text,
+            font_size_i: (font_size * Self::RESOLUTION) as u64,
+            line_height_i: (line_height * Self::RESOLUTION) as u64,
+            width_i: None,
+            height_i: None,
+        }
+    }
+
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.width_i = Some((width * Self::RESOLUTION) as u64);
+        self
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.height_i = Some((height * Self::RESOLUTION) as u64);
+        self
+    }
+
+    pub fn width(&self) -> Option<f32> {
+        self.width_i.map(|w| w as f32 / Self::RESOLUTION)
+    }
+
+    pub fn height(&self) -> Option<f32> {
+        self.height_i.map(|h| h as f32 / Self::RESOLUTION)
+    }
+
+    pub fn line_height(&self) -> f32 {
+        self.line_height_i as f32 / Self::RESOLUTION
+    }
+
+    pub fn font_size(&self) -> f32 {
+        self.font_size_i as f32 / Self::RESOLUTION
+    }
+
+    pub fn scaled_line_height(&self) -> f32 {
+        self.line_height() * self.font_size()
+    }
+}
+
+impl GlyphCache {
+    pub fn new(wgpu: &WGPU) -> Self {
+        const SIZE: u32 = 1024;
+        let size = SIZE.min(wgpu.device.limits().max_texture_dimension_2d);
+
+        let texture = wgpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph_cache_texture"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let alloc =
+            etagere::BucketedAtlasAllocator::new(etagere::Size::new(size as i32, size as i32));
+        let texture = gpu::Texture::new(texture, texture_view);
+
+        Self {
+            texture,
+            alloc,
+            size,
+            cached_glyphs: Default::default(),
+            swash_cache: ctext::SwashCache::new(),
+        }
+    }
+
+    pub fn get_glyph(
+        &mut self,
+        glyph_key: ctext::CacheKey,
+        fonts: &mut FontTable,
+        wgpu: &WGPU,
+    ) -> Option<Glyph> {
+        if let Some(&meta) = self.cached_glyphs.get(&glyph_key) {
+            return Some(Glyph {
+                texture: self.texture.clone(),
+                meta,
+            });
+        }
+
+        self.alloc_new_glyph(glyph_key, fonts, wgpu)
+    }
+
+    pub fn alloc_new_glyph(
+        &mut self,
+        glyph_key: ctext::CacheKey,
+        fonts: &mut FontTable,
+        wgpu: &WGPU,
+    ) -> Option<Glyph> {
+        let img = self
+            .swash_cache
+            .get_image_uncached(&mut fonts.sys, glyph_key)?;
+        let x = img.placement.left;
+        let y = img.placement.top;
+        let w = img.placement.width;
+        let h = img.placement.height;
+
+        let (has_color, data) = match img.content {
+            ctext::SwashContent::Mask => {
+                let mut data = Vec::new();
+                data.reserve_exact((w * h * 4) as usize);
+                for val in img.data {
+                    data.push(255);
+                    data.push(255);
+                    data.push(255);
+                    data.push(val);
+                }
+                (false, data)
+            }
+            ctext::SwashContent::Color => (true, img.data),
+            ctext::SwashContent::SubpixelMask => {
+                unimplemented!()
+            }
+        };
+
+        let rect = self
+            .alloc
+            .allocate(etagere::Size::new(w as i32, h as i32))?
+            .rectangle;
+
+        wgpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfoBase {
+                texture: &self.texture.raw(),
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: rect.min.x as u32,
+                    y: rect.min.y as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let tex_size = self.texture.width();
+        assert!(self.texture.height() == tex_size);
+        let pos = Vec2::new(x as f32, -y as f32);
+        let size = Vec2::new(w as f32, h as f32);
+        let uv_min = Vec2::new(rect.min.x as f32, rect.min.y as f32) / tex_size as f32;
+        let uv_max = uv_min + size / tex_size as f32;
+
+        let meta = GlyphMeta {
+            pos,
+            size,
+            uv_min,
+            uv_max,
+        };
+        self.cached_glyphs.insert(glyph_key, meta);
+
+        Some(Glyph {
+            texture: self.texture.clone(),
+            meta,
+        })
+    }
+}
+
+/* SHADER */
+
+pub struct UiShader;
+
+impl gpu::ShaderHandle for UiShader {
+    const RENDER_PIPELINE_ID: gpu::ShaderID = "ui_shader";
+
+    fn build_pipeline(&self, desc: &gpu::ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
+        const SHADER_SRC: &str = r#"
+
+
+            @rust struct Vertex {
+                pos: vec2<f32>,
+                uv: vec2<f32>,
+                col: vec4<f32>,
+                tex: u32,
+                ...
+            }
+
+            struct GlobalUniform {
+                screen_size: vec2<f32>,
+                _pad: vec2<f32>,
+                proj: mat4x4<f32>,
+            }
+
+            @group(0) @binding(0)
+            var<uniform> global: GlobalUniform;
+
+            struct VSOut {
+                @builtin(position) pos: vec4<f32>,
+                @location(0) color: vec4<f32>,
+                @location(1) uv: vec2<f32>,
+                @location(2) @interpolate(flat) tex: u32,
+            };
+
+            @vertex
+            fn vs_main(
+                v: Vertex,
+            ) -> VSOut {
+                var out: VSOut;
+
+                out.color = v.col;
+                out.uv = v.uv;
+                out.tex = v.tex;
+
+                out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
+                return out;
+            }
+
+
+            @group(0) @binding(1)
+            var samp: sampler;
+            @group(0) @binding(2)
+            var texture: texture_2d<f32>;
+
+
+            @fragment
+            fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+                let c0 = textureSample(texture, samp, in.uv) * in.color;
+                let c1 = in.color;
+                return select(c0, c1, in.tex != 1);
+            }
+            "#;
+
+        let bind_group_entries = [
+            // global uniform
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // sampler
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            // texture
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ];
+
+        let global_bind_group_layout =
+            wgpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &bind_group_entries,
+                    label: Some("global_bind_group_layout"),
+                });
+
+        let shader_src = gpu::pre_process_shader_code(SHADER_SRC, &desc).unwrap();
+        let vertices = desc.iter().map(|d| d.0).collect::<Vec<_>>();
+        gpu::PipelineBuilder::new(&shader_src, wgpu.surface_format)
+            .label("rect_pipeline")
+            .vertex_buffers(&vertices)
+            .bind_groups(&[&global_bind_group_layout])
+            .blend_state(Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }))
+            .sample_count(1)
+            .build(&wgpu.device)
     }
 }
