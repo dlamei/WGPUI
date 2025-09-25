@@ -28,16 +28,12 @@ DEALINGS IN THE SOFTWARE.
 
 use std::{fmt, ops};
 
-use glam::Vec2;
+use glam::{Vec2, vec2};
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Rect {
     pub min: Vec2,
     pub max: Vec2,
-}
-
-const fn vec2(x: f32, y: f32) -> Vec2 {
-    Vec2::new(x, y)
 }
 
 /// Return true when arguments are the same within some rounding error.
@@ -430,7 +426,8 @@ impl Rect {
     /// [Negative rectangles](Self::is_negative) always return [`f32::INFINITY`].
     ///
     /// ```
-    /// # use emath::{vec2, Rect};
+    /// # use glam::vec2;
+    /// # use wgpui::rect::Rect;
     /// let rect = Rect::from_min_max(vec2(0.0, 0.0), vec2(1.0, 1.0));
     /// assert_eq!(rect.signed_distance_to_pos(vec2(0.50, 0.50)), -0.50);
     /// assert_eq!(rect.signed_distance_to_pos(vec2(0.75, 0.50)), -0.25);

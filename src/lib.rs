@@ -2,7 +2,7 @@ pub mod app;
 mod gpu;
 mod mouse;
 mod mouse2;
-mod rect;
+pub mod rect;
 mod ui;
 mod ui2;
 mod ui_draw;

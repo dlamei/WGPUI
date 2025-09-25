@@ -9,13 +9,7 @@ use glam::{Mat4, Vec2};
 use macros::{flags, lorem};
 
 use crate::{
-    Vertex as VertexTyp,
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
-    mouse::{CursorIcon, MouseBtn, MouseState},
-    rect::Rect,
-    ui::{Dir, Layout, Placement, Signals},
-    ui_draw::{self, Vertex},
-    utils::{HashMap, RGBA},
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{CursorIcon, MouseBtn, MouseState}, rect::Rect, ui::{Dir, Layout, Placement, Signals}, ui_draw::{self, Vertex}, utils::{ArrVec, HashMap, RGBA}, Vertex as VertexTyp
 };
 
 pub struct Context {
@@ -1976,304 +1970,6 @@ pub enum OutlinePlacement {
 }
 
 
-/* DRAW STUFF */
-
-pub struct MergedDrawLists {
-    pub gpu_vertices: wgpu::Buffer,
-    pub gpu_indices: wgpu::Buffer,
-
-    pub draw_buffer: DrawBuffer,
-    pub screen_size: Vec2,
-
-    pub resolution: f32,
-    pub antialias: bool,
-
-    pub glyph_texture: gpu::Texture,
-
-    pub wgpu: WGPUHandle,
-}
-
-impl MergedDrawLists {
-    /// 2^16
-    pub const MAX_VERTEX_COUNT: u64 = 65_536;
-    // 2^17
-    pub const MAX_INDEX_COUNT: u64 = 131_072;
-
-    pub fn new(glyph_texture: gpu::Texture, wgpu: WGPUHandle) -> Self {
-        let mut font_db = ctext::fontdb::Database::new();
-        font_db.load_font_data(include_bytes!("../res/Roboto.ttf").to_vec());
-        // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
-        // font_db.load_font_data(include_bytes!("CommitMono-500-Regular.otf").to_vec());
-        let mut icon_font_db = ctext::fontdb::Database::new();
-        icon_font_db.load_font_data(include_bytes!("../res/Phosphor.ttf").to_vec());
-
-        let gpu_vertices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("draw_list_vertex_buffer"),
-            size: std::mem::size_of::<Vertex>() as u64 * Self::MAX_VERTEX_COUNT,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: false,
-        });
-
-        let gpu_indices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("draw_list_vertex_buffer"),
-            size: std::mem::size_of::<u32>() as u64 * Self::MAX_INDEX_COUNT,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
-            mapped_at_creation: false,
-        });
-
-        Self {
-            gpu_vertices,
-            gpu_indices,
-            screen_size: Vec2::ONE,
-            resolution: 20.0,
-            antialias: true,
-            draw_buffer: DrawBuffer::new(
-                Self::MAX_VERTEX_COUNT as usize,
-                Self::MAX_INDEX_COUNT as usize,
-            ),
-            glyph_texture,
-            wgpu,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.draw_buffer.clear();
-    }
-}
-
-impl RenderPassHandle for MergedDrawLists {
-    const LABEL: &'static str = "draw_list_render_pass";
-
-    fn n_render_passes(&self) -> u32 {
-        self.draw_buffer.chunks.len() as u32
-    }
-
-    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-        self.draw_multiple(rpass, wgpu, 0);
-    }
-
-    fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {
-        let proj =
-            Mat4::orthographic_lh(0.0, self.screen_size.x, self.screen_size.y, 0.0, -1.0, 1.0);
-
-        let global_uniform = ui_draw::GlobalUniform::new(self.screen_size, proj);
-
-        let bind_group = ui_draw::build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
-
-        let (verts, indxs) = self.draw_buffer.get_chunk_data(i).unwrap();
-
-        wgpu.queue
-            .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(verts));
-        wgpu.queue
-            .write_buffer(&self.gpu_indices, 0, bytemuck::cast_slice(indxs));
-
-        rpass.set_bind_group(0, &bind_group, &[]);
-        rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
-        rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
-        rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
-
-        rpass.draw_indexed(0..indxs.len() as u32, 0, 0..1);
-    }
-}
-
-
-/// Represents a contiguous segment of vertex and index data
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DrawChunk {
-    pub vtx_ptr: usize,
-    pub idx_ptr: usize,
-    pub n_vtx: usize,
-    pub n_idx: usize,
-}
-
-/// A chunked buffer storing vertices and indices,
-///
-/// Allowing multiple render passes
-/// when a single draw exceeds GPU limits or predefined chunk sizes.
-#[derive(Debug, Clone)]
-pub struct DrawBuffer {
-    pub max_vtx_per_chunk: usize,
-    pub max_idx_per_chunk: usize,
-    pub vtx_alloc: Vec<Vertex>,
-    pub idx_alloc: Vec<u32>,
-    /// Current write offset in `vtx_alloc`.
-    pub vtx_ptr: usize,
-    /// Current write offset in `idx_alloc`.
-    pub idx_ptr: usize,
-    pub chunks: Vec<DrawChunk>,
-}
-
-impl Default for DrawBuffer {
-    fn default() -> Self {
-        // 2^16
-        const MAX_VERTEX_COUNT: usize = 65_536;
-        // 2^17
-        const MAX_INDEX_COUNT: usize = 131_072;
-        Self::new(MAX_VERTEX_COUNT, MAX_INDEX_COUNT)
-    }
-}
-
-impl DrawBuffer {
-    pub fn clear(&mut self) {
-        self.chunks.clear();
-        self.vtx_ptr = 0;
-        self.idx_ptr = 0;
-    }
-
-    pub fn new(max_vtx_per_chunk: usize, max_idx_per_chunk: usize) -> Self {
-        Self {
-            max_vtx_per_chunk,
-            max_idx_per_chunk,
-            vtx_alloc: vec![],
-            idx_alloc: vec![],
-            vtx_ptr: 0,
-            idx_ptr: 0,
-            chunks: vec![],
-        }
-    }
-
-    pub fn get_chunk_data(&self, chunk_idx: u32) -> Option<(&[Vertex], &[u32])> {
-        self.chunks.get(chunk_idx as usize).map(|chunk| {
-            let vtx_slice = &self.vtx_alloc[chunk.vtx_ptr..chunk.vtx_ptr + chunk.n_vtx];
-            let idx_slice = &self.idx_alloc[chunk.idx_ptr..chunk.idx_ptr + chunk.n_idx];
-            (vtx_slice, idx_slice)
-        })
-    }
-
-    pub fn push(&mut self, vtx: &[Vertex], idx: &[u32]) {
-        if vtx.len() > self.max_vtx_per_chunk || idx.len() > self.max_idx_per_chunk {
-            panic!(
-                "Input data exceeds maximum chunk size: vtx={}, idx={}, max_vtx={}, max_idx={}",
-                vtx.len(),
-                idx.len(),
-                self.max_vtx_per_chunk,
-                self.max_idx_per_chunk
-            );
-        }
-
-        if self.chunks.is_empty() {
-            self.chunks.push(DrawChunk {
-                vtx_ptr: 0,
-                idx_ptr: 0,
-                n_vtx: 0,
-                n_idx: 0,
-            });
-        }
-
-        let c = *self.chunks.last().unwrap();
-
-        if c.n_vtx + vtx.len() > self.max_vtx_per_chunk
-            || c.n_idx + idx.len() > self.max_idx_per_chunk
-        {
-            self.chunks.push(DrawChunk {
-                vtx_ptr: self.vtx_ptr,
-                idx_ptr: self.idx_ptr,
-                n_vtx: 0,
-                n_idx: 0,
-            });
-        }
-
-        let c = self.chunks.last_mut().unwrap();
-
-        if self.vtx_alloc.len() < self.vtx_ptr + vtx.len() {
-            self.vtx_alloc
-                .resize(self.vtx_ptr + vtx.len(), Vertex::ZERO);
-        }
-
-        if self.idx_alloc.len() < self.idx_ptr + idx.len() {
-            self.idx_alloc.resize(self.idx_ptr + idx.len(), 0);
-        }
-
-        self.vtx_alloc[self.vtx_ptr..self.vtx_ptr + vtx.len()].copy_from_slice(vtx);
-        self.idx_alloc[self.idx_ptr..self.idx_ptr + idx.len()]
-            .iter_mut()
-            .zip(idx.iter())
-            .for_each(|(dst, &src)| *dst = src + c.n_vtx as u32);
-        // for (i, &index) in idx.iter().enumerate() {
-        //     self.idx_alloc[self.idx_ptr + i] = index + c.n_vtx as u32;
-        // }
-
-        c.n_vtx += vtx.len();
-        c.n_idx += idx.len();
-        self.vtx_ptr += vtx.len();
-        self.idx_ptr += idx.len();
-    }
-}
-
-pub struct DrawRect<'a> {
-    pub draw_list: &'a mut DrawList,
-    pub min: Vec2,
-    pub max: Vec2,
-    pub uv_min: Option<Vec2>,
-    pub uv_max: Option<Vec2>,
-    pub texture_id: u32,
-    pub fill: Option<RGBA>,
-    pub outline: Option<(RGBA, f32, OutlinePlacement)>,
-    pub corner_radii: [f32; 4],
-}
-
-impl DrawRect<'_> {
-    pub fn fill(mut self, fill: RGBA) -> Self {
-        self.fill = Some(fill);
-        self
-    }
-
-    pub fn outline(mut self, color: RGBA, width: f32, placement: Option<OutlinePlacement>) -> Self {
-        self.outline = Some((color, width, placement.unwrap_or_default()));
-        self
-    }
-
-    pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
-        self.uv_min = Some(uv_min);
-        self.uv_max = Some(uv_max);
-        self.texture_id = id;
-        self
-    }
-
-    pub fn texture(mut self, id: u32) -> Self {
-        self.texture_id = id;
-        self
-    }
-
-    pub fn circle(mut self) -> Self {
-        let width = self.max.x - self.min.x;
-        let height = self.max.y - self.min.y;
-        let rad = width.min(height) / 2.0;
-        self.radius(rad)
-    }
-
-    pub fn radius(self, rad: f32) -> Self {
-        self.radii([rad; 4])
-    }
-
-    pub fn radii(mut self, radii: [f32; 4]) -> Self {
-        self.corner_radii = radii;
-        self
-    }
-
-    pub fn radii_slice(mut self, r: &[f32]) -> Self {
-        if r.len() == 1 {
-            self.radius(r[0])
-        } else if r.len() == 4 {
-            self.radii([r[0], r[1], r[2], r[3]])
-        } else {
-            self
-        }
-    }
-
-    pub fn draw(self) {
-        self.draw_list.add_rect_full(
-            self.min,
-            self.max,
-            self.uv_min,
-            self.uv_max,
-            self.texture_id,
-            self.fill,
-            self.outline,
-            &self.corner_radii,
-        )
-    }
-}
 
 
 /* TEXT STUFF */
@@ -2586,6 +2282,307 @@ impl GlyphCache {
             texture: self.texture.clone(),
             meta,
         })
+    }
+}
+
+/* DRAW STUFF */
+
+pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 8;
+
+pub struct MergedDrawLists {
+    pub gpu_vertices: wgpu::Buffer,
+    pub gpu_indices: wgpu::Buffer,
+
+    pub draw_buffer: DrawBuffer,
+    pub screen_size: Vec2,
+
+    pub resolution: f32,
+    pub antialias: bool,
+
+    pub glyph_texture: gpu::Texture,
+
+    pub wgpu: WGPUHandle,
+}
+
+impl MergedDrawLists {
+    /// 2^16
+    pub const MAX_VERTEX_COUNT: u64 = 65_536;
+    // 2^17
+    pub const MAX_INDEX_COUNT: u64 = 131_072;
+
+    pub fn new(glyph_texture: gpu::Texture, wgpu: WGPUHandle) -> Self {
+        let mut font_db = ctext::fontdb::Database::new();
+        font_db.load_font_data(include_bytes!("../res/Roboto.ttf").to_vec());
+        // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
+        // font_db.load_font_data(include_bytes!("CommitMono-500-Regular.otf").to_vec());
+        let mut icon_font_db = ctext::fontdb::Database::new();
+        icon_font_db.load_font_data(include_bytes!("../res/Phosphor.ttf").to_vec());
+
+        let gpu_vertices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("draw_list_vertex_buffer"),
+            size: std::mem::size_of::<Vertex>() as u64 * Self::MAX_VERTEX_COUNT,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+
+        let gpu_indices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("draw_list_vertex_buffer"),
+            size: std::mem::size_of::<u32>() as u64 * Self::MAX_INDEX_COUNT,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            gpu_vertices,
+            gpu_indices,
+            screen_size: Vec2::ONE,
+            resolution: 20.0,
+            antialias: true,
+            draw_buffer: DrawBuffer::new(
+                Self::MAX_VERTEX_COUNT as usize,
+                Self::MAX_INDEX_COUNT as usize,
+            ),
+            glyph_texture,
+            wgpu,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.draw_buffer.clear();
+    }
+}
+
+impl RenderPassHandle for MergedDrawLists {
+    const LABEL: &'static str = "draw_list_render_pass";
+
+    fn n_render_passes(&self) -> u32 {
+        self.draw_buffer.chunks.len() as u32
+    }
+
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
+        self.draw_multiple(rpass, wgpu, 0);
+    }
+
+    fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {
+        let proj =
+            Mat4::orthographic_lh(0.0, self.screen_size.x, self.screen_size.y, 0.0, -1.0, 1.0);
+
+        let global_uniform = ui_draw::GlobalUniform::new(self.screen_size, proj);
+
+        let bind_group = ui_draw::build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
+
+        let (verts, indxs) = self.draw_buffer.get_chunk_data(i).unwrap();
+
+        wgpu.queue
+            .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(verts));
+        wgpu.queue
+            .write_buffer(&self.gpu_indices, 0, bytemuck::cast_slice(indxs));
+
+        rpass.set_bind_group(0, &bind_group, &[]);
+        rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
+        rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
+        rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
+
+        rpass.draw_indexed(0..indxs.len() as u32, 0, 0..1);
+    }
+}
+
+
+/// Represents a contiguous segment of vertex and index data
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawChunk {
+    pub vtx_ptr: usize,
+    pub idx_ptr: usize,
+    pub n_vtx: usize,
+    pub n_idx: usize,
+}
+
+/// A chunked buffer storing vertices and indices,
+///
+/// Allowing multiple render passes
+/// when a single draw exceeds GPU limits or predefined chunk sizes.
+#[derive(Debug, Clone)]
+pub struct DrawBuffer {
+    pub max_vtx_per_chunk: usize,
+    pub max_idx_per_chunk: usize,
+    pub vtx_alloc: Vec<Vertex>,
+    pub idx_alloc: Vec<u32>,
+    /// Current write offset in `vtx_alloc`.
+    pub vtx_ptr: usize,
+    /// Current write offset in `idx_alloc`.
+    pub idx_ptr: usize,
+    pub chunks: Vec<DrawChunk>,
+}
+
+impl Default for DrawBuffer {
+    fn default() -> Self {
+        // 2^16
+        const MAX_VERTEX_COUNT: usize = 65_536;
+        // 2^17
+        const MAX_INDEX_COUNT: usize = 131_072;
+        Self::new(MAX_VERTEX_COUNT, MAX_INDEX_COUNT)
+    }
+}
+
+impl DrawBuffer {
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.vtx_ptr = 0;
+        self.idx_ptr = 0;
+    }
+
+    pub fn new(max_vtx_per_chunk: usize, max_idx_per_chunk: usize) -> Self {
+        Self {
+            max_vtx_per_chunk,
+            max_idx_per_chunk,
+            vtx_alloc: vec![],
+            idx_alloc: vec![],
+            vtx_ptr: 0,
+            idx_ptr: 0,
+            chunks: vec![],
+        }
+    }
+
+    pub fn get_chunk_data(&self, chunk_idx: u32) -> Option<(&[Vertex], &[u32])> {
+        self.chunks.get(chunk_idx as usize).map(|chunk| {
+            let vtx_slice = &self.vtx_alloc[chunk.vtx_ptr..chunk.vtx_ptr + chunk.n_vtx];
+            let idx_slice = &self.idx_alloc[chunk.idx_ptr..chunk.idx_ptr + chunk.n_idx];
+            (vtx_slice, idx_slice)
+        })
+    }
+
+    pub fn push(&mut self, vtx: &[Vertex], idx: &[u32]) {
+        if vtx.len() > self.max_vtx_per_chunk || idx.len() > self.max_idx_per_chunk {
+            panic!(
+                "Input data exceeds maximum chunk size: vtx={}, idx={}, max_vtx={}, max_idx={}",
+                vtx.len(),
+                idx.len(),
+                self.max_vtx_per_chunk,
+                self.max_idx_per_chunk
+            );
+        }
+
+        if self.chunks.is_empty() {
+            self.chunks.push(DrawChunk {
+                vtx_ptr: 0,
+                idx_ptr: 0,
+                n_vtx: 0,
+                n_idx: 0,
+            });
+        }
+
+        let c = *self.chunks.last().unwrap();
+
+        if c.n_vtx + vtx.len() > self.max_vtx_per_chunk
+            || c.n_idx + idx.len() > self.max_idx_per_chunk
+        {
+            self.chunks.push(DrawChunk {
+                vtx_ptr: self.vtx_ptr,
+                idx_ptr: self.idx_ptr,
+                n_vtx: 0,
+                n_idx: 0,
+            });
+        }
+
+        let c = self.chunks.last_mut().unwrap();
+
+        if self.vtx_alloc.len() < self.vtx_ptr + vtx.len() {
+            self.vtx_alloc
+                .resize(self.vtx_ptr + vtx.len(), Vertex::ZERO);
+        }
+
+        if self.idx_alloc.len() < self.idx_ptr + idx.len() {
+            self.idx_alloc.resize(self.idx_ptr + idx.len(), 0);
+        }
+
+        self.vtx_alloc[self.vtx_ptr..self.vtx_ptr + vtx.len()].copy_from_slice(vtx);
+        self.idx_alloc[self.idx_ptr..self.idx_ptr + idx.len()]
+            .iter_mut()
+            .zip(idx.iter())
+            .for_each(|(dst, &src)| *dst = src + c.n_vtx as u32);
+        // for (i, &index) in idx.iter().enumerate() {
+        //     self.idx_alloc[self.idx_ptr + i] = index + c.n_vtx as u32;
+        // }
+
+        c.n_vtx += vtx.len();
+        c.n_idx += idx.len();
+        self.vtx_ptr += vtx.len();
+        self.idx_ptr += idx.len();
+    }
+}
+
+pub struct DrawRect<'a> {
+    pub draw_list: &'a mut DrawList,
+    pub min: Vec2,
+    pub max: Vec2,
+    pub uv_min: Option<Vec2>,
+    pub uv_max: Option<Vec2>,
+    pub texture_id: u32,
+    pub fill: Option<RGBA>,
+    pub outline: Option<(RGBA, f32, OutlinePlacement)>,
+    pub corner_radii: [f32; 4],
+}
+
+impl DrawRect<'_> {
+    pub fn fill(mut self, fill: RGBA) -> Self {
+        self.fill = Some(fill);
+        self
+    }
+
+    pub fn outline(mut self, color: RGBA, width: f32, placement: Option<OutlinePlacement>) -> Self {
+        self.outline = Some((color, width, placement.unwrap_or_default()));
+        self
+    }
+
+    pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
+        self.uv_min = Some(uv_min);
+        self.uv_max = Some(uv_max);
+        self.texture_id = id;
+        self
+    }
+
+    pub fn texture(mut self, id: u32) -> Self {
+        self.texture_id = id;
+        self
+    }
+
+    pub fn circle(mut self) -> Self {
+        let width = self.max.x - self.min.x;
+        let height = self.max.y - self.min.y;
+        let rad = width.min(height) / 2.0;
+        self.radius(rad)
+    }
+
+    pub fn radius(self, rad: f32) -> Self {
+        self.radii([rad; 4])
+    }
+
+    pub fn radii(mut self, radii: [f32; 4]) -> Self {
+        self.corner_radii = radii;
+        self
+    }
+
+    pub fn radii_slice(mut self, r: &[f32]) -> Self {
+        if r.len() == 1 {
+            self.radius(r[0])
+        } else if r.len() == 4 {
+            self.radii([r[0], r[1], r[2], r[3]])
+        } else {
+            self
+        }
+    }
+
+    pub fn draw(self) {
+        self.draw_list.add_rect_full(
+            self.min,
+            self.max,
+            self.uv_min,
+            self.uv_max,
+            self.texture_id,
+            self.fill,
+            self.outline,
+            &self.corner_radii,
+        )
     }
 }
 
