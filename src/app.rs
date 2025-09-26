@@ -186,7 +186,8 @@ impl AppSetup {
                     let size = window.window_size();
                     *self = Self::Init(App::new(wgpu, window));
                     let app = self.init_unwrap();
-                    app.ui2.resize_window(window_id, size.x as u32, size.y as u32);
+                    app.ui2
+                        .resize_window(window_id, size.x as u32, size.y as u32);
                     return Some(self.init_unwrap());
                 }
             }

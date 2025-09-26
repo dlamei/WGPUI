@@ -551,9 +551,6 @@ pub trait ExplicitCopy: Copy {
 
 impl<T: Copy> ExplicitCopy for T {}
 
-
-
-
 pub struct ArrVec<T, const N: usize> {
     data: [mem::MaybeUninit<T>; N],
     count: usize,
@@ -566,7 +563,7 @@ pub struct ArrVecIter<'a, T, const N: usize> {
 
 impl<'a, T, const N: usize> Iterator for ArrVecIter<'a, T, N> {
     type Item = &'a T;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.vec.count {
             let item = unsafe { self.vec.data[self.index].assume_init_ref() };
@@ -576,7 +573,7 @@ impl<'a, T, const N: usize> Iterator for ArrVecIter<'a, T, N> {
             None
         }
     }
-    
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.vec.count - self.index;
         (remaining, Some(remaining))
@@ -592,10 +589,10 @@ pub struct ArrVecIterMut<'a, T, const N: usize> {
 
 impl<'a, T, const N: usize> Iterator for ArrVecIterMut<'a, T, N> {
     type Item = &'a mut T;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.vec.count {
-            let item = unsafe { 
+            let item = unsafe {
                 // We need to extend the lifetime here, which is safe because
                 // the iterator holds a mutable reference to the vec
                 std::mem::transmute(self.vec.data[self.index].assume_init_mut())
@@ -606,7 +603,7 @@ impl<'a, T, const N: usize> Iterator for ArrVecIterMut<'a, T, N> {
             None
         }
     }
-    
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.vec.count - self.index;
         (remaining, Some(remaining))
@@ -615,9 +612,10 @@ impl<'a, T, const N: usize> Iterator for ArrVecIterMut<'a, T, N> {
 
 impl<'a, T, const N: usize> ExactSizeIterator for ArrVecIterMut<'a, T, N> {}
 
-
-impl<T, const N: usize> fmt::Debug for ArrVec<T, N> 
-where T: fmt::Debug {
+impl<T, const N: usize> fmt::Debug for ArrVec<T, N>
+where
+    T: fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
         for i in 0..self.count {
@@ -636,25 +634,25 @@ impl<T, const N: usize> ArrVec<T, N> {
             count: 0, // Start with 0 elements, not 1
         }
     }
-    
+
     pub fn len(&self) -> usize {
         self.count // Return count of initialized elements, not array length
     }
-    
+
     pub fn cap(&self) -> usize {
         N
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     pub fn push(&mut self, elem: T) {
         assert!(self.count < N, "ArrVec is full");
         self.data[self.count].write(elem);
         self.count += 1;
     }
-    
+
     pub fn pop(&mut self) -> Option<T> {
         if self.count == 0 {
             None
@@ -663,7 +661,7 @@ impl<T, const N: usize> ArrVec<T, N> {
             Some(unsafe { self.data[self.count].assume_init_read() })
         }
     }
-    
+
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.count {
             Some(unsafe { self.data[index].assume_init_ref() })
@@ -671,7 +669,7 @@ impl<T, const N: usize> ArrVec<T, N> {
             None
         }
     }
-    
+
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.count {
             Some(unsafe { self.data[index].assume_init_mut() })
@@ -679,19 +677,36 @@ impl<T, const N: usize> ArrVec<T, N> {
             None
         }
     }
-    
+
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { mem::transmute(&self.data[..self.count]) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { mem::transmute(&mut self.data[..self.count]) }
+    }
+
     pub fn iter(&self) -> ArrVecIter<'_, T, N> {
         ArrVecIter {
             vec: self,
             index: 0,
         }
     }
-    
+
     pub fn iter_mut(&mut self) -> ArrVecIterMut<'_, T, N> {
         ArrVecIterMut {
             vec: self,
             index: 0,
         }
+    }
+}
+
+impl<T, const N: usize> ArrVec<T, N> 
+where T: Copy {
+    pub fn as_padded_arr(&self, pad: T) -> [T; N] {
+        let mut res = [pad; N];
+        res[0..self.count].copy_from_slice(self.as_slice());
+        res
     }
 }
 
@@ -701,13 +716,15 @@ impl<T, const N: usize> Default for ArrVec<T, N> {
     }
 }
 
-impl<T, const N: usize> PartialEq for ArrVec<T, N> 
-where T: PartialEq {
+impl<T, const N: usize> PartialEq for ArrVec<T, N>
+where
+    T: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
         if self.count != other.count {
             return false;
         }
-        
+
         for i in 0..self.count {
             unsafe {
                 if self.data[i].assume_init_ref() != other.data[i].assume_init_ref() {
@@ -719,11 +736,12 @@ where T: PartialEq {
     }
 }
 
-impl<T, const N: usize> Eq for ArrVec<T, N> 
-where T: Eq {}
+impl<T, const N: usize> Eq for ArrVec<T, N> where T: Eq {}
 
-impl<T, const N: usize> hash::Hash for ArrVec<T, N> 
-where T: hash::Hash {
+impl<T, const N: usize> hash::Hash for ArrVec<T, N>
+where
+    T: hash::Hash,
+{
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         use hash::Hash;
         self.count.hash(state);
@@ -735,8 +753,12 @@ where T: hash::Hash {
     }
 }
 
-impl<T, const N: usize> Clone for ArrVec<T, N> 
-where T: Clone {
+impl<T, const N: usize> Copy for ArrVec<T, N> where T: Copy {}
+
+impl<T, const N: usize> Clone for ArrVec<T, N>
+where
+    T: Clone,
+{
     fn clone(&self) -> Self {
         let mut new_vec = Self::new();
         for i in 0..self.count {
@@ -748,20 +770,9 @@ where T: Clone {
     }
 }
 
-impl<T, const N: usize> Drop for ArrVec<T, N> {
-    fn drop(&mut self) {
-        // Drop all initialized elements
-        for i in 0..self.count {
-            unsafe {
-                self.data[i].assume_init_drop();
-            }
-        }
-    }
-}
-
 impl<T, const N: usize> std::ops::Index<usize> for ArrVec<T, N> {
     type Output = T;
-    
+
     fn index(&self, index: usize) -> &Self::Output {
         self.get(index).expect("index out of bounds")
     }
@@ -777,67 +788,67 @@ impl<T, const N: usize> std::ops::IndexMut<usize> for ArrVec<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic_operations() {
         let mut vec: ArrVec<i32, 5> = ArrVec::new();
-        
+
         assert_eq!(vec.len(), 0);
         assert!(vec.is_empty());
-        
+
         vec.push(1);
         vec.push(2);
         vec.push(3);
-        
+
         assert_eq!(vec.len(), 3);
         assert_eq!(vec[0], 1);
         assert_eq!(vec[1], 2);
         assert_eq!(vec[2], 3);
-        
+
         assert_eq!(vec.pop(), Some(3));
         assert_eq!(vec.pop(), Some(2));
         assert_eq!(vec.len(), 1);
-        
+
         assert_eq!(vec.pop(), Some(1));
         assert_eq!(vec.pop(), None);
         assert!(vec.is_empty());
     }
-    
+
     #[test]
     fn test_traits() {
         let mut vec1: ArrVec<i32, 5> = ArrVec::new();
         vec1.push(1);
         vec1.push(2);
         vec1.push(3);
-        
+
         let vec2 = vec1.clone();
         assert_eq!(vec1, vec2);
-        
+
         let mut vec3: ArrVec<i32, 5> = ArrVec::default();
         vec3.push(1);
         vec3.push(2);
         assert_ne!(vec1, vec3);
-        
+
         use std::collections::HashMap;
         let mut map = HashMap::new();
         map.insert(vec1.clone(), "test");
         assert_eq!(map.get(&vec1), Some(&"test"));
     }
-    
+
     #[test]
     fn test_iterators() {
         let mut vec: ArrVec<i32, 5> = ArrVec::new();
         vec.push(1);
         vec.push(2);
         vec.push(3);
-        
+
         let collected: Vec<&i32> = vec.iter().collect();
         assert_eq!(collected, vec![&1, &2, &3]);
-        
+
         for item in vec.iter_mut() {
             *item *= 2;
         }
-        
+
         let collected: Vec<&i32> = vec.iter().collect();
         assert_eq!(collected, vec![&2, &4, &6]);
     }

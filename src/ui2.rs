@@ -9,7 +9,13 @@ use glam::{Mat4, Vec2};
 use macros::{flags, lorem};
 
 use crate::{
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{CursorIcon, MouseBtn, MouseState}, rect::Rect, ui::{Dir, Layout, Placement, Signals}, ui_draw::{self, Vertex}, utils::{ArrVec, HashMap, RGBA}, Vertex as VertexTyp
+    Vertex as VertexTyp,
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{CursorIcon, MouseBtn, MouseState},
+    rect::Rect,
+    ui::{Dir, Layout, Placement, Signals},
+    ui_draw::{self, Vertex},
+    utils::{ArrVec, HashMap, RGBA},
 };
 
 pub struct Context {
@@ -26,12 +32,11 @@ pub struct Context {
     pub next: NextPanelData,
 
     // TODO[CHECK]: when do we set the panels and item ids?
-
     /// the id of the element that is currently hovered
     ///
     /// can either be an item or a panel
     pub hot_id: Id,
-    
+
     /// the id of the element that is currently active
     ///
     /// Can either be an item or a panel.
@@ -42,7 +47,7 @@ pub struct Context {
     ///
     /// the hot_id can only point to elements of the currently hot panel
     pub hot_panel_id: Id,
-    
+
     /// the id of the active panel
     ///
     /// the active_id can only point to elements of the currently active panel
@@ -169,18 +174,15 @@ impl Context {
         }
 
         if press && lft_btn {
-
             let id = self.find_panel_by_name("#ROOT_PANEL");
             let root_panel = &self.panels[id];
             let titlebar_height = root_panel.titlebar_height;
             if let Some(dir) = resize_dir {
-
                 self.window.start_drag_resize_window(dir)
             } else if self.mouse.pos.y <= titlebar_height {
                 self.window.start_drag_window()
             }
         }
-
     }
 
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
@@ -269,7 +271,6 @@ impl Context {
         self.next.reset();
         p.root = p.id;
 
-
         let prev_max_pos = p.cursor_max_pos();
 
         let content_start = p.pos + Vec2::new(p.padding, p.padding + p.titlebar_height);
@@ -316,12 +317,15 @@ impl Context {
         // let p = &self.panels[id];
         let is_window_panel = p.is_window_panel;
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
-            // titlebar
+            // draw titlebar
             p.draw(|list| {
-                list.rect(panel_pos, panel_pos + Vec2::new(panel_size.x, p.titlebar_height))
-                    .fill(self.style.titlebar_color)
-                    .radii([corner_rad, corner_rad, 0.0, 0.0])
-                    .draw()
+                list.rect(
+                    panel_pos,
+                    panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
+                )
+                .fill(self.style.titlebar_color)
+                .radii([corner_rad, corner_rad, 0.0, 0.0])
+                .draw()
             });
             // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
             let prev_pos = self.cursor_pos();
@@ -336,9 +340,7 @@ impl Context {
             let p = &self.panels[id];
             let button_size = Vec2::new(25.0, 25.0);
             self.set_cursor_pos(panel_pos);
-            self.move_cursor(Vec2::new(0.0, (p.titlebar_height - button_size.y) / 2.0));
-            self.move_cursor(Vec2::new(panel_size.x - 15.0 - button_size.x, 0.0));
-
+            self.move_cursor(Vec2::new(panel_size.x - 15.0 - button_size.x, (p.titlebar_height - button_size.y) / 2.0));
             if is_window_panel {
                 self.move_cursor(Vec2::new((-10.0 - button_size.x) * 2.0, 0.0));
                 let min_id = self.panels[id].gen_id("min");
@@ -430,7 +432,11 @@ impl Context {
             }
         }
 
-        if let &PanelAction::Move { start_pos, id: drag_id } = &self.panel_action {
+        if let &PanelAction::Move {
+            start_pos,
+            id: drag_id,
+        } = &self.panel_action
+        {
             if self.mouse.dragging(MouseBtn::Left) {
                 if let Some(drag_start) = self.mouse.drag_start(MouseBtn::Left) {
                     let p = &mut self.panels[drag_id];
@@ -446,7 +452,6 @@ impl Context {
         if let Some(name) = name {
             assert!(name == &p.name);
         }
-
 
         let p = self.get_current_panel();
         let p_pad = p.padding;
@@ -686,7 +691,6 @@ impl Context {
         self.panels[root_id].draw_order = new_order;
     }
 
-
     pub fn begin_frame(&mut self) {
         self.draw.clear();
         self.draw.screen_size = self.window.window_size();
@@ -700,8 +704,8 @@ impl Context {
         self.next.corner_radius = 0.0;
         // TODO
         // self.window
-        
-        // NO_MOVE because the window panel dragging is handled by the window, 
+
+        // NO_MOVE because the window panel dragging is handled by the window,
         // not the panel
         let mut flags = PanelFlags::NO_FOCUS | PanelFlags::NO_MOVE;
 
@@ -805,11 +809,7 @@ impl Context {
             let uv_min = g.meta.uv_min;
             let uv_max = g.meta.uv_max;
 
-            p.draw(|list| {
-                list.rect(min, max)
-                    .texture_uv(uv_min, uv_max, 1)
-                    .draw()
-            })
+            p.draw(|list| list.rect(min, max).texture_uv(uv_min, uv_max, 1).draw())
         }
     }
 
@@ -1203,7 +1203,7 @@ pub struct LastItemData {
 
 macro_rules! id_type {
     ($id_ty:ident) => {
-        #[derive(Default, Clone, Copy, PartialEq, Eq)]
+        #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $id_ty(u64);
 
         impl $id_ty {
@@ -1251,7 +1251,7 @@ macro_rules! id_type {
             }
         }
 
-        impl hash::Hash for Id {
+        impl hash::Hash for $id_ty {
             fn hash<H: hash::Hasher>(&self, state: &mut H) {
                 assert!(!self.is_null());
                 self.0.hash(state)
@@ -1273,6 +1273,7 @@ macro_rules! id_type {
 }
 
 id_type!(Id);
+id_type!(TextureId);
 
 /// A single draw command
 #[derive(Debug, Clone, Copy, Default)]
@@ -1969,9 +1970,6 @@ pub enum OutlinePlacement {
     Inner,
 }
 
-
-
-
 /* TEXT STUFF */
 
 pub type TextItemCache = HashMap<TextItem, ShapedText>;
@@ -2009,12 +2007,10 @@ pub struct TextItem {
     pub height_i: Option<u64>,
 }
 
-
 pub struct FontTable {
     pub id_to_name: Vec<(FontId, String)>,
     pub sys: ctext::FontSystem,
 }
-
 
 pub struct GlyphCache {
     pub texture: gpu::Texture,
@@ -2023,7 +2019,6 @@ pub struct GlyphCache {
     pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
     pub swash_cache: ctext::SwashCache,
 }
-
 
 impl FontTable {
     pub fn new() -> Self {
@@ -2387,7 +2382,6 @@ impl RenderPassHandle for MergedDrawLists {
     }
 }
 
-
 /// Represents a contiguous segment of vertex and index data
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrawChunk {
@@ -2395,6 +2389,19 @@ pub struct DrawChunk {
     pub idx_ptr: usize,
     pub n_vtx: usize,
     pub n_idx: usize,
+    pub textures: ArrVec<TextureId, MAX_N_TEXTURES_PER_DRAW_CALL>,
+}
+
+impl DrawChunk {
+    pub fn new() -> Self {
+        Self {
+            vtx_ptr: 0,
+            idx_ptr: 0,
+            n_vtx: 0,
+            n_idx: 0,
+            textures: ArrVec::new(),
+        }
+    }
 }
 
 /// A chunked buffer storing vertices and indices,
@@ -2463,12 +2470,7 @@ impl DrawBuffer {
         }
 
         if self.chunks.is_empty() {
-            self.chunks.push(DrawChunk {
-                vtx_ptr: 0,
-                idx_ptr: 0,
-                n_vtx: 0,
-                n_idx: 0,
-            });
+            self.chunks.push(DrawChunk::new());
         }
 
         let c = *self.chunks.last().unwrap();
@@ -2481,6 +2483,7 @@ impl DrawBuffer {
                 idx_ptr: self.idx_ptr,
                 n_vtx: 0,
                 n_idx: 0,
+                textures: ArrVec::new(),
             });
         }
 
