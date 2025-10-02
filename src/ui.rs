@@ -45,7 +45,7 @@ fn dark_theme() -> StyleTable {
                 Outline::new(btn_hover, 1.5).with_place(OutlinePlacement::Outer),
             ),
             SF::PanelPadding => SV::PanelPadding(10.0),
-            SF::SpacingV => SV::SpacingV(12.0),
+            SF::SpacingV => SV::SpacingV(6.0),
             SF::SpacingH => SV::SpacingH(12.0),
             SF::Red => SV::Red(RGBA::hex("#e65858")),
         }
@@ -339,6 +339,7 @@ impl Context {
         p.clear_temp_data();
 
         assert!(p.id == id);
+        p.root = p.id;
         p.push_id(p.id);
         p.flags = flags;
         p.explicit_size = self.next.size;
@@ -347,9 +348,16 @@ impl Context {
         p.padding = self.style.panel_padding();
         p.layout = self.next.layout;
         p.last_frame_used = self.frame_count;
-        p.move_id = p.gen_id("#MOVE");
+        p.move_id = p.gen_id("##MOVE");
+
         p.min_size = self.next.min_size;
         p.max_size = self.next.max_size;
+
+        if !p.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
+            p.nav_root = p.move_id;
+        } else {
+            p.nav_root = p.root;
+        }
 
         if p.id != self.root_panel_id {
             p.pos.y = p.pos.y.max(self.root_panel_titlebar_height);
@@ -369,7 +377,6 @@ impl Context {
         }
 
         self.next.reset();
-        p.root = p.id;
 
         let p = &mut self.panels[id];
 
@@ -641,7 +648,9 @@ impl Context {
     pub fn update_panel_move(&mut self) {
         if !self.active_panel_id.is_null() {
             let p = &mut self.panels[self.active_panel_id];
-            if self.active_id == p.move_id && !p.move_id.is_null() {
+            if self.active_id == p.move_id && !p.move_id.is_null() 
+                || self.active_id == p.id && p.nav_root == p.move_id 
+            {
                 if self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_none() {
                     self.panel_action = PanelAction::Move {
                         id: p.root,
@@ -1104,14 +1113,14 @@ impl Context {
         self.next.initial_width = 450.0;
         self.begin("Debug##DEBUG");
 
-        let hot_name = self.get_panel_name_with_id(self.prev_hot_panel_id);
-        let active_name = self.get_panel_name_with_id(self.prev_active_panel_id);
+        let hot_name = self.get_panel_name_with_id(self.prev_hot_panel_id).unwrap_or_default();
+        let active_name = self.get_panel_name_with_id(self.prev_active_panel_id).unwrap_or_default();
         // let tmp = self.style.text_size();
 
         // self.style.text_size = 50.0;
         // self.push_style(StyleVar::TextSize(30.0));
-        ui_text!(self: "hot: {hot_name:?}");
-        ui_text!(self: "active: {active_name:?}");
+        ui_text!(self: "hot: {hot_name}");
+        ui_text!(self: "active: {active_name}");
         ui_text!(self: "hot item: {}", self.prev_hot_id);
         ui_text!(self: "active item: {}", self.prev_active_id);
 
@@ -1215,8 +1224,6 @@ impl Context {
         }
         self.n_draw_calls = self.draw.call_list.len();
 
-        self.frame_count += 1;
-        self.mouse.end_frame();
         // self.prev_item_data.reset();
 
         if let PanelAction::Resize { dir, .. } = self.panel_action {
@@ -1235,6 +1242,27 @@ impl Context {
             window.set_window_pos(*pos);
             self.ext_window = Some(window);
         }
+
+
+        self.prune_nodes();
+
+        self.frame_count += 1;
+        self.mouse.end_frame();
+    }
+
+    pub fn prune_nodes(&mut self) {
+        self.panels.into_iter().filter(|(&(&id, panel))| {
+            if self.frame_count - panel.last_frame_used > 1 {
+                assert_eq!(id, panel.id);
+                assert!(id != self.hot_id);
+                assert!(id != self.active_id);
+                assert!(id != self.hot_panel_id);
+                assert!(id != self.active_panel_id);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn shape_text(&self, text: &str, font_size: f32) -> ShapedText {
@@ -1397,6 +1425,7 @@ pub struct Panel {
     pub flags: PanelFlags,
 
     pub root: Id,
+    pub nav_root: Id,
 
     pub padding: f32,
 
@@ -1469,6 +1498,7 @@ impl Panel {
             name,
             id,
             root: Id::NULL,
+            nav_root: Id::NULL,
             flags: PanelFlags::NONE,
             padding: 0.0,
             // spacing: 10.0,
@@ -1884,7 +1914,7 @@ impl PanelAction {
 
 #[derive(Debug, Default, Clone)]
 pub struct PanelMap {
-    map: HashMap<Id, Panel>,
+    pub map: HashMap<Id, Panel>,
 }
 
 impl PanelMap {
@@ -1964,7 +1994,7 @@ impl std::ops::IndexMut<Id> for PanelMap {
 //---------------------------------------------------------------------------------------
 
 macros::flags!(ItemFlags: MOVE_CURSOR_NO);
-macros::flags!(PanelFlags: NO_TITLEBAR, NO_FOCUS, NO_MOVE, NO_RESIZE);
+macros::flags!(PanelFlags: NO_TITLEBAR, NO_FOCUS, NO_MOVE, NO_RESIZE, ONLY_MOVE_FROM_TITLEBAR);
 
 macros::flags!(
     Signal:

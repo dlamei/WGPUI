@@ -100,7 +100,8 @@ impl ui::Context {
             let rail_max = rail_min + Vec2::new(width, height);
             list.rect(rect.min, rect.max)
                 // .corners(CornerRadii::all(height * 0.5))
-                .corners(CornerRadii::all(height * 0.3))
+                // .corners(CornerRadii::all(height * 0.3))
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(bg_col)
                 .add();
 
@@ -112,7 +113,8 @@ impl ui::Context {
             };
             let knob_center = Vec2::new(knob_x, rail_min.y + height * 0.5);
             list.circle(knob_center, knob_r)
-                .corners(CornerRadii::all(height * 0.8 * 0.3))
+                // .corners(CornerRadii::all(height * 0.8 * 0.3))
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(knob_col)
                 .add();
         });
@@ -241,13 +243,15 @@ impl ui::Context {
         self.draw(|list| {
             // rail (no left->right fill; knob indicates value)
             list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(height * 0.3))
+                // .corners(CornerRadii::all(height * 0.3))
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(rail_col)
                 .add();
 
             // knob
             list.circle(knob_center, knob_r)
-                .corners(CornerRadii::all(height * 0.8 * 0.3))
+                // .corners(CornerRadii::all(height * 0.8 * 0.3))
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(knob_col)
                 .add();
         });
@@ -307,7 +311,7 @@ impl ui::Context {
 
         let size = Vec2::new(shape.width, shape.height);
         let rect = self.place_item(id, size);
-        self.register_item(id);
+        // self.register_item(id);
         self.move_down(pad);
 
         self.draw(|list| list.add_text(rect.min, &shape, self.style.text_col()));
