@@ -214,6 +214,12 @@ impl ApplicationHandler for AppSetup {
             app.on_window_event(event_loop, window_id, event);
         }
     }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = self.try_init() {
+            app.ui.window.request_redraw();
+        }
+    }
 }
 
 pub struct App {
@@ -348,7 +354,7 @@ impl App {
         ui.end();
 
         for i in 0..4 {
-            ui.begin(format!("test window##{i}"));
+            ui.begin(format!("test window {i}"));
             ui.button("test button");
             ui.same_line();
             ui.checkbox_intern("checkbox");
