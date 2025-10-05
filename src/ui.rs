@@ -15,6 +15,8 @@ use crate::{
     rect::Rect,
 };
 
+// TODO[NOTE]: framepadding style?
+
 fn dark_theme() -> StyleTable {
     use StyleField as SF;
     use StyleVar as SV;
@@ -58,7 +60,7 @@ fn dark_theme() -> StyleTable {
 
 pub struct Context {
     // pub panels: HashMap<Id, Panel>,
-    pub panels: PanelMap,
+    pub panels: IdMap<Panel>,
     pub widget_data: DataMap<Id>,
     // pub style: Style,
     pub style: StyleTable,
@@ -66,6 +68,11 @@ pub struct Context {
     pub current_panel_stack: Vec<Id>,
     pub current_panel_id: Id,
     pub draw_order: Vec<Id>,
+
+    pub current_tabbar_id: Id,
+    pub tabbars: IdMap<TabBar>,
+    pub tabbar_count: u32,
+
 
     // TODO[CHECK]: still needed? how to use exactly
     pub prev_item_data: PrevItemData,
@@ -148,12 +155,17 @@ impl Context {
         font_table.load_font("Phosphor", include_bytes!("../res/Phosphor.ttf").to_vec());
 
         Self {
-            panels: PanelMap::default(),
+            panels: IdMap::new(),
             widget_data: DataMap::new(),
             // style: Style::dark(),
             style: dark_theme(),
             draw: MergedDrawLists::new(glyph_cache.texture.clone(), wgpu),
             current_panel_stack: vec![],
+
+            current_tabbar_id: Id::NULL,
+            tabbars: IdMap::new(),
+            tabbar_count: 0,
+
             current_panel_id: Id::NULL,
             prev_item_data: PrevItemData::new(),
 
@@ -1394,9 +1406,9 @@ impl Context {
         p.push_id(id)
     }
 
-    pub fn pop_id(&self) {
+    pub fn pop_id(&self) -> Id {
         let p = &self.panels[self.current_panel_id];
-        p.pop_id();
+        p.pop_id()
     }
 
     pub fn push_style(&mut self, var: StyleVar) {
@@ -1483,7 +1495,7 @@ impl Context {
             self.unindent(20.0);
         }
 
-        self.separator_h(4.0);
+        // self.separator_h(4.0);
 
         if self.collapsing_header_intern("settings") {
             self.indent(20.0);
@@ -1541,6 +1553,23 @@ impl Context {
             self.style.set_var(StyleVar::PanelCornerRadius(v));
             self.unindent(20.0);
         }
+
+
+        self.begin_tabbar("tabbar");
+
+        if self.tabitem("tab 1") {
+            self.text("tab 1");
+        }
+
+        if self.tabitem("tab 2") {
+            self.text("tab 2");
+        }
+
+        if self.tabitem("tab 3") {
+            self.text("tab 3");
+        }
+
+        self.end_tabbar();
 
         self.end();
     }
@@ -2499,13 +2528,15 @@ impl PanelAction {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct PanelMap {
-    pub map: HashMap<Id, Panel>,
+pub struct IdMap<T> {
+    pub map: HashMap<Id, T>,
 }
 
-impl PanelMap {
+impl<T> IdMap<T> {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            map: HashMap::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -2519,14 +2550,14 @@ impl PanelMap {
         self.map.contains_key(&id)
     }
 
-    pub fn get(&self, id: Id) -> Option<&Panel> {
+    pub fn get(&self, id: Id) -> Option<&T> {
         if id.is_null() {
             return None;
         }
         self.map.get(&id)
     }
 
-    pub fn get_mut(&mut self, id: Id) -> Option<&mut Panel> {
+    pub fn get_mut(&mut self, id: Id) -> Option<&mut T> {
         if id.is_null() {
             return None;
         }
@@ -2545,71 +2576,119 @@ impl PanelMap {
     //     self.get(self.current_id).unwrap()
     // }
 
-    pub fn insert(&mut self, id: Id, panel: Panel) {
+    pub fn insert(&mut self, id: Id, panel: T) {
         assert!(!id.is_null());
         self.map.insert(id, panel);
     }
 
     pub fn retain<F>(&mut self, f: F)
     where
-        F: FnMut(&Id, &mut Panel) -> bool,
+        F: FnMut(&Id, &mut T) -> bool,
     {
         self.map.retain(f);
     }
 }
 
-impl IntoIterator for PanelMap {
-    type Item = (Id, Panel);
-    type IntoIter = std::collections::hash_map::IntoIter<Id, Panel>;
+impl<T> IntoIterator for IdMap<T> {
+    type Item = (Id, T);
+    type IntoIter = std::collections::hash_map::IntoIter<Id, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a PanelMap {
-    type Item = (&'a Id, &'a Panel);
-    type IntoIter = std::collections::hash_map::Iter<'a, Id, Panel>;
+impl<'a, T> IntoIterator for &'a IdMap<T> {
+    type Item = (&'a Id, &'a T);
+    type IntoIter = std::collections::hash_map::Iter<'a, Id, T>;
     fn into_iter(self) -> Self::IntoIter {
         (&self.map).iter()
     }
 }
 
-impl<'a> IntoIterator for &'a mut PanelMap {
-    type Item = (&'a Id, &'a mut Panel);
-    type IntoIter = std::collections::hash_map::IterMut<'a, Id, Panel>;
+impl<'a, T> IntoIterator for &'a mut IdMap<T> {
+    type Item = (&'a Id, &'a mut T);
+    type IntoIter = std::collections::hash_map::IterMut<'a, Id, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.iter_mut()
     }
 }
 
-impl FromIterator<(Id, Panel)> for PanelMap {
-    fn from_iter<I: IntoIterator<Item = (Id, Panel)>>(iter: I) -> Self {
-        PanelMap {
+impl<T> FromIterator<(Id, T)> for IdMap<T> {
+    fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
+        IdMap {
             map: HashMap::from_iter(iter),
         }
     }
 }
 
-impl Extend<(Id, Panel)> for PanelMap {
-    fn extend<I: IntoIterator<Item = (Id, Panel)>>(&mut self, iter: I) {
+impl<T> Extend<(Id, T)> for IdMap<T> {
+    fn extend<I: IntoIterator<Item = (Id, T)>>(&mut self, iter: I) {
         self.map.extend(iter);
     }
 }
 
-impl std::ops::Index<Id> for PanelMap {
-    type Output = Panel;
+impl<T> std::ops::Index<Id> for IdMap<T> {
+    type Output = T;
 
     fn index(&self, id: Id) -> &Self::Output {
         self.get(id).unwrap()
     }
 }
 
-impl std::ops::IndexMut<Id> for PanelMap {
+impl<T> std::ops::IndexMut<Id> for IdMap<T> {
     fn index_mut(&mut self, id: Id) -> &mut Self::Output {
         self.get_mut(id).unwrap()
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabBar {
+    pub panel_id: Id,
+    pub id: Id,
+    pub selected_tab_id: Id,
+    // pub next_selected_tab_id: Id,
+    pub bar_rect: Rect,
+    pub cursor_backup: Cursor,
+    pub tabs: Vec<TabItem>,
+
+    pub is_dragging: bool,
+    pub dragging_offset: f32,
+}
+
+impl TabBar {
+    pub fn new() -> Self {
+        Self {
+            panel_id: Id::NULL,
+            id: Id::NULL,
+            cursor_backup: Cursor::default(),
+            selected_tab_id: Id::NULL,
+            // next_selected_tab_id: Id::NULL,
+            bar_rect: Rect::ZERO,
+            tabs: vec![],
+            is_dragging: false,
+            dragging_offset: f32::NAN,
+        }
+    }
+
+    pub fn find_tab(&self, id: Id) -> Option<&TabItem> {
+        assert!(!id.is_null());
+        self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    pub fn find_mut_tab(&mut self, id: Id) -> Option<&mut TabItem> {
+        assert!(!id.is_null());
+        self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct TabItem {
+    pub id: Id,
+    pub width: f32,
+    pub offset: f32,
+    pub close_pressed: bool,
 }
 
 //---------------------------------------------------------------------------------------
