@@ -33,7 +33,7 @@ impl ui::Context {
 
         let total_h = self.style.line_height();
         let text_shape = self.shape_text(label, self.style.text_size());
-        let text_dim = self.shape_text(label, self.style.text_size()).size();
+        let text_dim = text_shape.size();
 
         let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
         let horiz_pad = vert_pad;
@@ -178,60 +178,6 @@ impl ui::Context {
         self.draw(|list| list.rect(rect.min, rect.max).fill(col).add());
     }
 
-    pub fn scrollbar_v(&mut self, content_height: f32, view_height: f32, offset: &mut f32) {
-        let bar_width = self.style.line_height() * 0.6;
-        let height = view_height;
-        let rect = self.place_item(self.gen_id("scrollbar_v"), Vec2::new(bar_width, height));
-        let sig = self.register_item(self.gen_id("scrollbar_v"));
-
-        let rail_col = self.style.btn_default();
-        let knob_col = self.style.btn_press();
-        let hover_col = self.style.btn_hover();
-
-        let knob_h = if content_height <= 0.0 {
-            height
-        } else {
-            (view_height / content_height * height).clamp(self.style.line_height(), height)
-        };
-        let max_offset = (content_height - view_height).max(0.0);
-        let ratio = if max_offset <= 0.0 {
-            0.0
-        } else {
-            (*offset / max_offset).clamp(0.0, 1.0)
-        };
-        let knob_min_y = rect.min.y + (height - knob_h) * ratio;
-        let knob_max_y = knob_min_y + knob_h;
-        let knob_min = Vec2::new(rect.min.x, knob_min_y);
-        let knob_max = Vec2::new(rect.max.x, knob_max_y);
-
-        if sig.pressed() || sig.dragging() {
-            let t = ((self.mouse.pos.y - rect.min.y - knob_h * 0.5) / (height - knob_h))
-                .clamp(0.0, 1.0);
-            *offset = t * max_offset;
-        }
-
-        if sig.hovering() {
-            self.set_cursor_icon(CursorIcon::MoveV);
-        }
-
-        let knob_final_col = if sig.hovering() || sig.dragging() {
-            hover_col
-        } else {
-            knob_col
-        };
-
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(rail_col)
-                .add();
-            list.rect(knob_min, knob_max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(knob_final_col)
-                .add();
-        });
-    }
-
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
         let height = self.style.line_height();
         let width = self.available_content().x / 2.5;
@@ -291,6 +237,66 @@ impl ui::Context {
         self.text(label);
     }
 
+    pub fn collapsing_header(&mut self, label: &str, open: &mut bool) -> bool {
+        let id = self.gen_id(label);
+        let active = self.style.btn_press();
+        let hover = self.style.btn_hover();
+        let default = self.style.btn_default();
+
+        let total_h = self.style.line_height();
+
+        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_dim = text_shape.size();
+
+        let icon = if *open {
+            ui::PhosphorFont::CARET_DOWN
+        } else {
+            ui::PhosphorFont::CARET_RIGHT
+        };
+        let icon_shape = self.shape_icon(icon, self.style.text_size());
+        let icon_dim = text_shape.size();
+
+        let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
+        let avail = self.available_content();
+        let size = Vec2::new(avail.x, total_h);
+
+        let rect = self.place_item(id, size);
+        let sig = self.register_item(id);
+
+        let start_drag_outside = self
+            .mouse
+            .drag_start(MouseBtn::Left)
+            .map_or(false, |pos| !rect.contains(pos));
+
+        if sig.released() {
+            *open = !*open;
+        }
+
+        let (btn_col, text_col) = if *open || sig.pressed() && !start_drag_outside {
+            (active, self.style.btn_press_text())
+        } else if sig.hovering() {
+            (hover, self.style.text_col())
+        } else {
+            (default, self.style.text_col())
+        };
+
+        let icon_pos = rect.min + Vec2::new(vert_pad, (size.y - icon_dim.y) * 0.5);
+
+        let text_pos = icon_pos + Vec2::new(self.style.text_size() * 2.0, 0.0);
+
+        self.draw(|list| {
+            list.rect(rect.min, rect.max)
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .fill(btn_col)
+                .add();
+
+            list.add_text(icon_pos, &icon_shape, text_col);
+            list.add_text(text_pos, &text_shape, text_col);
+        });
+
+        *open
+    }
+
     pub fn text(&mut self, text: &str) {
         let text_height = self.style.text_size();
         let line_height = self.style.line_height().max(text_height);
@@ -334,16 +340,11 @@ impl ui::Context {
         val
     }
 
-    pub fn scrollbar_v_intern(
-        &mut self,
-        label: &str,
-        content_height: f32,
-        view_height: f32,
-    ) -> f32 {
+    pub fn collapsing_header_intern(&mut self, label: &str) -> bool {
         let id = self.gen_id(label);
-        let mut offset = *self.widget_data.get_or_insert(id, 0.0);
-        self.scrollbar_v(content_height, view_height, &mut offset);
-        self.widget_data.insert(id, offset);
-        offset
+        let mut b = *self.widget_data.get_or_insert(id, false);
+        self.collapsing_header(label, &mut b);
+        self.widget_data.insert(id, b);
+        b
     }
 }

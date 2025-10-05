@@ -384,11 +384,14 @@ impl Context {
         p.move_id = p.gen_id("##_MOVE");
         p.draw_list.borrow_mut().clip_content = self.clip_content;
 
-        if !self.panel_action.is_scroll() {
-            let scroll_min = p.scroll_min();
-            let scroll_max = p.scroll_max();
-            p.scroll = p.scroll.min(scroll_max).max(scroll_min);
-        }
+        // p.scroll = p.next_scroll;
+        p.scroll = p.next_scroll.min(p.scroll_max()).max(p.scroll_min());
+        p.next_scroll = p.scroll;
+        // if !self.panel_action.is_scroll() {
+        //     let scroll_min = p.scroll_min();
+        //     let scroll_max = p.scroll_max();
+        //     p.scroll = p.scroll.min(scroll_max).max(scroll_min);
+        // }
 
         p.min_size = self.next.min_size;
         p.max_size = self.next.max_size;
@@ -439,10 +442,11 @@ impl Context {
 
         p.full_content_size = prev_max_pos - prev_content_start;
 
-        p.full_size = prev_max_pos - p.pos + Vec2::splat(p.padding) + Vec2::splat(outline.offset()) * 2.0;
+        p.full_size =
+            prev_max_pos - p.pos + Vec2::splat(p.padding) + Vec2::splat(outline.offset()) * 2.0;
 
         if self.frame_count - p.frame_created == 1 {
-            p.size = p.full_size;
+            p.size = p.full_size * 1.1;
         }
 
         let panel_pos = p.pos;
@@ -551,9 +555,9 @@ impl Context {
         // draw scrollbar
         let p = &self.panels[id];
         let (x_scroll, y_scroll) = p.needs_scrollbars();
-        if y_scroll && flags.has(PanelFlags::DRAW_V_SCROLLBAR){
+        if y_scroll && flags.has(PanelFlags::DRAW_V_SCROLLBAR) {
             self.draw_scrollbar(1);
-        } 
+        }
         if x_scroll && flags.has(PanelFlags::DRAW_H_SCROLLBAR) {
             self.draw_scrollbar(0);
         }
@@ -567,7 +571,6 @@ impl Context {
                 list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
             }
         });
-
     }
 
     fn draw_scrollbar(&mut self, axis: usize) {
@@ -584,7 +587,7 @@ impl Context {
         if full_size <= view_size {
             return;
         }
-        
+
         let track_size = view_size;
         let handle_size = ((view_size / full_size) * track_size).max(scrollbar_width);
         let scrollable = full_size - view_size;
@@ -598,11 +601,9 @@ impl Context {
             content.min[axis]
         };
 
-        // Position scrollbar
         let scroll_id = self.gen_id(format!("##_SCROLLBAR_{}", axis));
         let scroll_pad = p.padding / 2.0 + p.scrollbar_padding / 2.0;
 
-        // Build min/max based on axis orientation
         let (min, max) = if axis == 1 {
             // Vertical scrollbar (Y axis)
             let min = Vec2::new(content.max.x + scroll_pad, thumb_pos);
@@ -617,23 +618,9 @@ impl Context {
 
         let scrollbar_rect = Rect::from_min_max(min, max);
 
-        // Handle interaction
+        // handle panel action
         let sig = self.register_rect(scroll_id, scrollbar_rect);
-        self.handle_scrollbar_interaction(sig, min, axis);
-
-        // Draw scrollbar handle
-        let handle_col = self.get_scrollbar_color(sig, axis);
-        self.draw_over(|list| {
-            list.rect(min, max)
-                .corners(CornerRadii::all(scrollbar_width * 0.3))
-                .fill(handle_col)
-                .add();
-            });
-    }
-
-    fn handle_scrollbar_interaction(&mut self, sig: Signal, min: Vec2, axis: usize) {
         let p = &self.panels[self.current_panel_id];
-
         if (sig.pressed() || sig.dragging()) && self.panel_action.is_none() {
             if sig.pressed() && !sig.dragging() {
                 self.expect_drag = true;
@@ -643,7 +630,7 @@ impl Context {
             let scroll_rect = Rect::from_min_max(p.scroll_min(), p.scroll_max());
 
             self.panel_action = PanelAction::Scroll {
-                axis,
+                axis: axis,
                 id: p.id,
                 start_scroll: p.scroll,
                 press_offset: offset,
@@ -652,96 +639,29 @@ impl Context {
         } else if self.panel_action.is_scroll() && !self.mouse.pressed(MouseBtn::Left) {
             self.panel_action = PanelAction::None;
         }
-    }
 
-    fn get_scrollbar_color(&self, sig: Signal, scroll_axis: usize) -> RGBA {
-        let p = &self.panels[self.current_panel_id];
         let is_scrolling = if let PanelAction::Scroll { id, axis, .. } = self.panel_action {
-            id == p.id && axis == scroll_axis
+            id == p.id && axis == axis
         } else {
             false
         };
 
-        if sig.pressed() || is_scrolling {
+        // draw
+        let handle_col = if sig.pressed() || is_scrolling {
             self.style.btn_press()
         } else if sig.hovering() {
             self.style.btn_hover()
         } else {
             self.style.panel_dark_bg()
-        }
+        };
+
+        self.draw_over(|list| {
+            list.rect(min, max)
+                .corners(CornerRadii::all(scrollbar_width * 0.3))
+                .fill(handle_col)
+                .add();
+        });
     }
-
-    // pub fn draw_scrollbars(&mut self) {
-    //     let p = &self.get_current_panel();
-    //     let content = p.visible_content_rect();
-    //     let full_content = p.full_content_rect();
-
-    //     let view_h = content.height();
-    //     let full_h = full_content.height().max(1.0); // avoid div-by-zero
-    //     let track_h = view_h;
-    //     let handle_h = ((view_h / full_h) * track_h).max(p.scrollbar_width);
-
-    //     // how many content-pixels are scrollable, and how many pixels the thumb can move
-    //     let scrollable = (full_h - view_h).max(0.0);
-    //     let track_move = (track_h - handle_h).max(1.0);
-
-    //     // compute thumb top from current scroll (p.scroll.y is negative when scrolled down)
-    //     let offset = (-p.scroll.y).max(0.0).min(scrollable);
-    //     let thumb_top = if scrollable > 0.0 {
-    //         content.min.y + (offset / scrollable) * track_move
-    //     } else {
-    //         content.min.y
-    //     };
-
-    //     let scroll_id = self.gen_id("##_SCROLLBAR_V");
-
-    //     let scroll_pad = p.padding / 2.0 + p.scrollbar_padding / 2.0;
-    //     let min = Vec2::new(content.max.x + scroll_pad, thumb_top);
-    //     let max = min + Vec2::new(p.scrollbar_width, handle_h);
-    //     let scrollbar_rect = Rect::from_min_max(min, max);
-
-    //     let sig = self.register_rect(scroll_id, scrollbar_rect);
-    //     let p = &self.panels[self.current_panel_id];
-
-    //     if (sig.pressed() || sig.dragging()) && self.panel_action.is_none() {
-    //         if sig.pressed() && !sig.dragging() {
-    //             self.expect_drag = true;
-    //         }
-    //         // store the start scroll so dragging logic can derive start thumb pos
-    //         let offset = self.mouse.pos - min;
-    //         let scroll_rect = Rect::from_min_max(p.scroll_min(), p.scroll_max());
-    //         self.panel_action = PanelAction::Scroll {
-    //             id: p.id,
-    //             start_scroll: p.scroll,
-    //             press_offset: offset,
-    //             scroll_rect,
-    //             axis,
-    //         };
-    //     } else if self.panel_action.is_scroll() && !self.mouse.pressed(MouseBtn::Left) {
-    //         self.panel_action = PanelAction::None;
-    //     }
-
-    //     let is_scrolling = if let PanelAction::Scroll { id, .. } = self.panel_action {
-    //         id == p.id
-    //     } else {
-    //         false
-    //     };
-
-    //     let handle_col = if sig.pressed() || is_scrolling {
-    //         self.style.btn_press()
-    //     } else if sig.hovering() {
-    //         self.style.btn_hover()
-    //     } else {
-    //         self.style.panel_dark_bg()
-    //     };
-
-    //     self.draw_over(|list| {
-    //         list.rect(min, max)
-    //             .corners(CornerRadii::all(p.scrollbar_width * 0.3))
-    //             .fill(handle_col)
-    //             .add();
-    //         });
-    // }
 
     pub fn draw_panel_decorations(
         &mut self,
@@ -860,120 +780,6 @@ impl Context {
         (min_sig, max_sig, close_sig)
     }
 
-    // pub fn draw_panel_decorations(&mut self, minimize: bool, maximize: bool, close: bool) -> (Signal, Signal, Signal) {
-    //     let p = self.get_current_panel();
-    //     let move_id = p.move_id;
-    //     let titlebar_height = p.titlebar_height;
-    //     let panel_pos = p.pos;
-    //     let panel_size = p.size;
-    //     let title = p.name.clone();
-    //     let flags = p.flags;
-
-    //     // draw titlebar
-    //     let title_text = self.shape_text(&title, self.style.text_size());
-    //     self.draw(|list| {
-    //         list.rect(
-    //             panel_pos,
-    //             panel_pos + Vec2::new(panel_size.x, titlebar_height),
-    //         )
-    //             .fill(self.style.titlebar_color())
-    //             .corners(CornerRadii::top(self.style.panel_corner_radius()))
-    //             .add();
-
-    //         let pad = (titlebar_height - title_text.height) / 2.0;
-    //         list.add_text(panel_pos + Vec2::splat(pad), &title_text, self.style.text_col())
-    //     });
-    //     // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
-    //     // self.set_cursor_pos(panel_pos);
-
-    //     self.register_rect(
-    //         move_id,
-    //         Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
-    //     );
-
-    //     // let p = &self.panels[id];
-    //     let btn_size = Vec2::new(25.0, 25.0);
-
-    //     let mut btns_pos = panel_pos
-    //         + Vec2::new(
-    //             panel_size.x - (btn_size.x + 10.0),
-    //             (titlebar_height - btn_size.y) / 2.0,
-    //         );
-
-    //     let mut min_sig = Signal::NONE;
-    //     let mut max_sig = Signal::NONE;
-    //     let mut close_sig = Signal::NONE;
-
-    //     if minimize {
-    //         let min_id = self.gen_id("##_MIN_ICON");
-
-    //         btns_pos.x -= (btn_size.x + 10.0) * 2.0;
-
-    //         min_sig = self.register_rect(min_id, Rect::from_min_size(btns_pos, btn_size));
-    //         let mut color = self.style.text_col();
-    //         if min_sig.hovering() {
-    //             color = self.style.btn_hover();
-    //         }
-
-    //         // draw minimize button
-    //         self.draw(|list| {
-    //             let min_icon = self.shape_icon(PhosphorFont::MINIMIZE, self.style.text_size());
-    //             let pad = btn_size - min_icon.size();
-    //             let pos = btns_pos + pad / 2.0;
-    //             list.add_text(pos, &min_icon, color);
-    //         });
-    //     }
-    //     if maximize {
-
-    //         let max_id = self.gen_id("##_MAX_ICON");
-    //         btns_pos.x += 10.0 + btn_size.x;
-    //         max_sig = self.register_rect(max_id, Rect::from_min_size(btns_pos, btn_size));
-    //         let mut color = self.style.text_col();
-    //         if max_sig.hovering() {
-    //             color = self.style.btn_hover();
-    //         }
-    //         if max_sig.released() {
-    //             self.window.toggle_maximize();
-    //         }
-
-    //         self.draw(|list| {
-    //             let max_icon = if self.window.is_maximized() {
-    //                 self.shape_icon(PhosphorFont::MAXIMIZE_OFF, self.style.text_size())
-    //             } else {
-    //                 self.shape_icon(PhosphorFont::MAXIMIZE, self.style.text_size())
-    //             };
-    //             let pad = btn_size - max_icon.size();
-    //             let pos = btns_pos + pad / 2.0;
-
-    //             list.add_text(pos, &max_icon, color);
-    //         });
-
-    //         btns_pos.x += 10.0 + btn_size.x;
-    //     }
-
-    //     if close {
-    //         self.move_cursor(Vec2::new(btn_size.x + 10.0, 0.0));
-    //         let close_id = self.gen_id("##_CLOSE_ICON");
-    //         close_sig = self.register_rect(close_id, Rect::from_min_size(btns_pos, btn_size));
-
-    //         let mut color = RGBA::WHITE;
-    //         if close_sig.hovering() {
-    //             color = self.style.red();
-    //         }
-
-    //         // draw close button
-    //         let x_icon = self.shape_icon(PhosphorFont::X, self.style.text_size());
-    //         self.draw(|list| {
-    //             let pad = btn_size - x_icon.size();
-    //             let pos = btns_pos + pad / 2.0;
-    //             list.add_text(pos, &x_icon, color);
-    //         });
-    //     }
-
-    //     (min_sig, max_sig, close_sig)
-    // }
-    //
-
     pub fn update_panel_scroll(&mut self) {
         let PanelAction::Scroll {
             id,
@@ -1019,113 +825,14 @@ impl Context {
         // Set new scroll (keep other axis from start_scroll)
         let mut scroll = start_scroll;
         scroll[axis] = new_scroll.round();
+        // p.set_scroll(scroll);
+        p.next_scroll = scroll;
 
-        let scroll_min = p.scroll_min();
-        let scroll_max = p.scroll_max();
+        // let scroll_min = p.scroll_min();
+        // let scroll_max = p.scroll_max();
 
-        p.scroll = scroll.min(scroll_max).max(scroll_min);
+        // p.next_scroll = scroll.min(scroll_max).max(scroll_min);
     }
-
-
-    // pub fn update_panel_scroll(&mut self) {
-    //     // AI SLOP
-    //     let PanelAction::Scroll {
-    //         id,
-    //         start_scroll,
-    //         press_offset,
-    //         scroll_rect,
-    //         axis,
-    //     } = self.panel_action
-    //     else {
-    //         return;
-    //     };
-
-    //     if !self.mouse.pressed(MouseBtn::Left) {
-    //         self.panel_action = PanelAction::None;
-    //         return;
-    //     }
-
-    //     let p = &mut self.panels[id];
-
-    //     // recompute the same metrics used for drawing the scrollbar
-    //     let content = p.visible_content_rect();
-    //     let full_content = p.full_content_rect();
-
-    //     let view_h = content.height();
-    //     let full_h = full_content.height().max(1.0); // avoid div-by-zero
-    //     let track_h = view_h;
-    //     let handle_h = ((view_h / full_h) * track_h).max(p.scrollbar_width);
-
-    //     let scrollable = (full_h - view_h).max(0.0);
-    //     let track_move = (track_h - handle_h).max(1.0);
-
-    //     // compute thumb_top from current mouse pos while respecting press_offset
-    //     // clamp to track range [content.min.y .. content.min.y + track_move]
-    //     let thumb_top_unclamped = self.mouse.pos.y - press_offset.y;
-    //     let thumb_top = thumb_top_unclamped
-    //         .max(content.min.y)
-    //         .min(content.min.y + track_move);
-
-    //     // convert thumb position to content offset (offset = how many content-pixels from top are scrolled)
-    //     let new_scroll_y = if scrollable > 0.0 {
-    //         let offset = ((thumb_top - content.min.y) / track_move) * scrollable;
-    //         -offset // scroll is negative when scrolled down
-    //     } else {
-    //         0.0
-    //     };
-
-    //     // set new scroll (keep x from start_scroll)
-    //     let scroll = Vec2::new(start_scroll.x, new_scroll_y.round());
-    //     // p.scroll = scroll;
-    //     p.scroll = scroll.min(scroll_rect.max).max(scroll_rect.min);
-    // }
-
-    // pub fn update_panel_scroll(&mut self) {
-    //     let PanelAction::Scroll { id, start_scroll } = self.panel_action else {
-    //         return
-    //     };
-    //     assert!(self.active_panel_id == id);
-
-    //     if let Some(drag_start_mouse) = self.mouse.drag_start(MouseBtn::Left) {
-    //         let mouse_y = self.mouse.pos.y;
-
-    //         let p = &mut self.panels[self.active_panel_id];
-
-    //         let content = p.visible_content_rect();
-    //         let full_content = p.full_content_rect();
-
-    //         let view_h = content.height();
-    //         let full_h = full_content.height().max(1.0);
-    //         let track_h = view_h;
-    //         let handle_h = ((view_h / full_h) * track_h).max(p.scrollbar_width);
-
-    //         let scrollable = (full_h - view_h).max(0.0);
-    //         let track_move = (track_h - handle_h).max(1.0);
-
-    //         // derive start thumb top from stored start_scroll
-    //         let start_offset = (-start_scroll).max(0.0).min(scrollable);
-    //         let start_thumb_top = if scrollable > 0.0 {
-    //             content.min.y + (start_offset / scrollable) * track_move
-    //         } else {
-    //             content.min.y
-    //         };
-
-    //         // how far the thumb should move (in pixels)
-    //         let delta = mouse_y - drag_start_mouse.y;
-    //         let new_thumb_top = (start_thumb_top + delta).max(content.min.y).min(content.min.y + track_move);
-
-    //         // map thumb position back to scroll value
-    //         let frac = if track_move > 0.0 {
-    //             (new_thumb_top - content.min.y) / track_move
-    //         } else {
-    //             0.0
-    //         };
-    //         let new_offset = frac * scrollable;
-    //         let new_scroll = -new_offset;
-
-    //         p.set_scroll(Vec2::new(0.0, new_scroll).round());
-    //     }
-    // }
 
     pub fn update_panel_resize(&mut self) {
         if let Some(p) = self.panels.get_mut(self.hot_panel_id) {
@@ -1351,6 +1058,20 @@ impl Context {
         &self.panels[self.current_panel_id]
     }
 
+    pub fn indent(&mut self, indent: f32) {
+        let mut c = self.get_current_panel()._cursor.borrow_mut();
+        c.pos.x += indent;
+        c.max_pos = c.max_pos.max(c.pos);
+        c.indent = indent;
+    }
+
+    pub fn unindent(&mut self, indent: f32) {
+        let mut c = self.get_current_panel()._cursor.borrow_mut();
+        c.pos.x -= indent;
+        c.max_pos = c.max_pos.max(c.pos);
+        c.indent -= indent;
+    }
+
     pub fn move_down(&self, offset: f32) {
         self.move_cursor(Vec2::new(0.0, offset))
     }
@@ -1389,6 +1110,10 @@ impl Context {
         self.get_current_panel().set_cursor_pos(pos)
     }
 
+    pub fn new_line(&mut self) {
+        self.place_item(Id::NULL, Vec2::new(0.0, self.style.line_height()));
+    }
+
     pub fn same_line(&self) {
         let p = self.get_current_panel();
         // TODO[CHECK]: scroll
@@ -1417,7 +1142,8 @@ impl Context {
     // TODO[NOTE]: what do we do with layout? now that we have same_line
     pub fn place_item(&mut self, id: Id, size: Vec2) -> Rect {
         let p = self.get_current_panel();
-        let rect = Rect::from_min_size(p.cursor_pos().round() + p.scroll, size.round());
+        // let rect = Rect::from_min_size(p.cursor_pos().round() + p.scroll, size.round());
+        let rect = Rect::from_min_size(p.cursor_pos().round(), size.round());
         let clip_rect = p.current_clip_rect();
 
         let mut c = p._cursor.borrow_mut();
@@ -1432,7 +1158,7 @@ impl Context {
         c.pos_prev_line.x = c.pos.x + size.x;
         c.pos_prev_line.y = line_y1;
 
-        c.pos.x = (p.pos.x + p.padding).round();
+        c.pos.x = (p.pos.x + p.padding + c.indent).round();
         c.pos.y = line_y1 + line_height + self.style.spacing_v();
 
         c.max_pos.x = c.max_pos.x.max(c.pos_prev_line.x);
@@ -1443,34 +1169,45 @@ impl Context {
         c.is_same_line = false;
         drop(c);
 
-        self.prev_item_data.reset();
-        self.prev_item_data.id = id;
-        self.prev_item_data.rect = rect;
+        if !id.is_null() {
+            self.prev_item_data.reset();
+            self.prev_item_data.id = id;
+            self.prev_item_data.rect = rect;
 
-        let Some(crect) = rect.clip(clip_rect) else {
-            self.prev_item_data.is_hidden = true;
-            return rect;
-        };
+            let Some(crect) = rect.clip(clip_rect) else {
+                self.prev_item_data.is_hidden = true;
+                return rect;
+            };
 
-        if self.draw_item_outline {
-            self.draw_over(|list| {
-                list.add_rect_outline(rect.min, rect.max, Outline::outer(RGBA::PASTEL_YELLOW, 1.5));
-                if let Some(crect) = rect.clip(clip_rect) {
-                    list.add_rect_outline(crect.min, crect.max, Outline::outer(RGBA::YELLOW, 1.5));
-                }
-            });
+            if self.draw_item_outline {
+                self.draw_over(|list| {
+                    list.add_rect_outline(
+                        rect.min,
+                        rect.max,
+                        Outline::outer(RGBA::PASTEL_YELLOW, 1.5),
+                    );
+                    if let Some(crect) = rect.clip(clip_rect) {
+                        list.add_rect_outline(
+                            crect.min,
+                            crect.max,
+                            Outline::outer(RGBA::YELLOW, 1.5),
+                        );
+                    }
+                });
+            }
+
+            self.prev_item_data.clipped_rect = crect;
+            self.prev_item_data.is_clipped = !clip_rect.contains_rect(rect);
         }
-
-
-        self.prev_item_data.clipped_rect = crect;
-        self.prev_item_data.is_clipped = !clip_rect.contains_rect(rect);
 
         rect
     }
 
     pub fn update_hot_id(&mut self, id: Id, bb: Rect) {
-        let is_topmost = self.prev_hot_panel_id == self.current_panel_id || self.prev_hot_panel_id.is_null();
-        if bb.contains(self.mouse.pos) && !id.is_null() && self.panel_action.is_none() && is_topmost {
+        let is_topmost =
+            self.prev_hot_panel_id == self.current_panel_id || self.prev_hot_panel_id.is_null();
+        if bb.contains(self.mouse.pos) && !id.is_null() && self.panel_action.is_none() && is_topmost
+        {
             self.hot_id = id;
         }
     }
@@ -1677,7 +1414,10 @@ impl Context {
         use crate::ui_items::ui_text;
 
         self.next.initial_width = 450.0;
-        self.begin_ex("Debug##_DEBUG_PANEL", PanelFlags::DRAW_H_SCROLLBAR | PanelFlags::DRAW_V_SCROLLBAR);
+        self.begin_ex(
+            "Debug##_DEBUG_PANEL",
+            PanelFlags::DRAW_H_SCROLLBAR | PanelFlags::DRAW_V_SCROLLBAR,
+        );
 
         let hot_name = self
             .get_panel_name_with_id(self.prev_hot_panel_id)
@@ -1729,69 +1469,77 @@ impl Context {
         self.checkbox("draw item outline", &mut tmp);
         self.draw_item_outline = tmp;
 
-        if self.checkbox_intern("show font atlas") {
+        if self.collapsing_header_intern("show font atlas") {
+            self.indent(20.0);
+            self.move_down(20.0);
             let avail = self.available_content().min(Vec2::splat(800.0));
             let uv_min = self.glyph_cache.borrow().min_alloc_uv;
             let uv_max = self.glyph_cache.borrow().max_alloc_uv;
             let size = uv_max - uv_min;
             let scale = (avail.x / size.x).min(avail.y / size.y);
             let fitted_size = size * scale;
-            self.image(fitted_size, uv_min, uv_max, 1);
+            self.image(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, 1);
+            self.unindent(20.0);
         }
 
         self.separator_h(4.0);
 
-        let mut v = self.style.titlebar_height();
-        self.slider_f32("titlebar height", 0.0, 100.0, &mut v);
-        self.style.set_var(StyleVar::TitlebarHeight(v));
+        if self.collapsing_header_intern("settings") {
+            self.indent(20.0);
+            self.move_down(20.0);
+            let mut v = self.style.titlebar_height();
+            self.slider_f32("titlebar height", 0.0, 100.0, &mut v);
+            self.style.set_var(StyleVar::TitlebarHeight(v));
 
-        let mut v = self.style.window_titlebar_height();
-        self.slider_f32("window titlebar height", 0.0, 100.0, &mut v);
-        self.style.set_var(StyleVar::WindowTitlebarHeight(v));
+            let mut v = self.style.window_titlebar_height();
+            self.slider_f32("window titlebar height", 0.0, 100.0, &mut v);
+            self.style.set_var(StyleVar::WindowTitlebarHeight(v));
 
-        let mut v = self.style.spacing_h();
-        self.slider_f32("spacing h", 0.0, 30.0, &mut v);
-        self.style.set_var(StyleVar::SpacingH(v));
+            let mut v = self.style.spacing_h();
+            self.slider_f32("spacing h", 0.0, 30.0, &mut v);
+            self.style.set_var(StyleVar::SpacingH(v));
 
-        let mut v = self.style.spacing_v();
-        self.slider_f32("spacing v", 0.0, 30.0, &mut v);
-        self.style.set_var(StyleVar::SpacingV(v));
+            let mut v = self.style.spacing_v();
+            self.slider_f32("spacing v", 0.0, 30.0, &mut v);
+            self.style.set_var(StyleVar::SpacingV(v));
 
-        let mut v = self.style.line_height();
-        self.slider_f32("line height", 0.0, 30.0, &mut v);
-        self.style.set_var(StyleVar::LineHeight(v));
+            let mut v = self.style.line_height();
+            self.slider_f32("line height", 0.0, 30.0, &mut v);
+            self.style.set_var(StyleVar::LineHeight(v));
 
-        let mut v = self.style.panel_padding();
-        self.slider_f32("panel padding", 0.0, 30.0, &mut v);
-        v = v.round();
-        self.style.set_var(StyleVar::PanelPadding(v));
+            let mut v = self.style.panel_padding();
+            self.slider_f32("panel padding", 0.0, 30.0, &mut v);
+            v = v.round();
+            self.style.set_var(StyleVar::PanelPadding(v));
 
-        let mut v = self.style.panel_outline();
-        self.slider_f32("panel outline width", 0.0, 30.0, &mut v.width);
-        self.style.set_var(StyleVar::PanelOutline(v));
+            let mut v = self.style.panel_outline();
+            self.slider_f32("panel outline width", 0.0, 30.0, &mut v.width);
+            self.style.set_var(StyleVar::PanelOutline(v));
 
-        let mut v = self.style.scrollbar_width();
-        self.slider_f32("scrollbar width", 0.0, 30.0, &mut v);
-        v = v.round();
-        self.style.set_var(StyleVar::ScrollbarWidth(v));
+            let mut v = self.style.scrollbar_width();
+            self.slider_f32("scrollbar width", 0.0, 30.0, &mut v);
+            v = v.round();
+            self.style.set_var(StyleVar::ScrollbarWidth(v));
 
-        let mut v = self.style.scrollbar_padding();
-        self.slider_f32("scrollbar padding", 0.0, 30.0, &mut v);
-        v = v.round();
-        self.style.set_var(StyleVar::ScrollbarPadding(v));
+            let mut v = self.style.scrollbar_padding();
+            self.slider_f32("scrollbar padding", 0.0, 30.0, &mut v);
+            v = v.round();
+            self.style.set_var(StyleVar::ScrollbarPadding(v));
 
-        // TODO[NOTE]: not enough space in the font atlas
-        // let mut v = self.style.text_size();
-        // self.slider_f32("text height", 0.0, 30.0, &mut v);
-        // self.style.set_var(StyleVar::TextSize(v));
+            // TODO[NOTE]: not enough space in the font atlas
+            // let mut v = self.style.text_size();
+            // self.slider_f32("text height", 0.0, 30.0, &mut v);
+            // self.style.set_var(StyleVar::TextSize(v));
 
-        let mut v = self.style.btn_roundness();
-        self.slider_f32("button corners", 0.0, 0.5, &mut v);
-        self.style.set_var(StyleVar::BtnRoundness(v));
+            let mut v = self.style.btn_roundness();
+            self.slider_f32("button corners", 0.0, 0.5, &mut v);
+            self.style.set_var(StyleVar::BtnRoundness(v));
 
-        let mut v = self.style.panel_corner_radius();
-        self.slider_f32("panel corners", 0.0, 100.0, &mut v);
-        self.style.set_var(StyleVar::PanelCornerRadius(v));
+            let mut v = self.style.panel_corner_radius();
+            self.slider_f32("panel corners", 0.0, 100.0, &mut v);
+            self.style.set_var(StyleVar::PanelCornerRadius(v));
+            self.unindent(20.0);
+        }
 
         self.end();
     }
@@ -1859,17 +1607,16 @@ impl Context {
     }
 
     pub fn prune_nodes(&mut self) {
-        self.panels.into_iter().filter(|(&(&id, panel))| {
-            if self.frame_count - panel.last_frame_used > 1 {
-                assert_eq!(id, panel.id);
-                assert!(id != self.hot_id);
-                assert!(id != self.active_id);
-                assert!(id != self.hot_panel_id);
-                assert!(id != self.active_panel_id);
-                false
-            } else {
-                true
+        self.panels.retain(|id, panel| {
+            let unused = self.frame_count - panel.last_frame_used > 1;
+            if unused {
+                debug_assert_eq!(*id, panel.id);
+                debug_assert_ne!(*id, self.hot_id);
+                debug_assert_ne!(*id, self.active_id);
+                debug_assert_ne!(*id, self.hot_panel_id);
+                debug_assert_ne!(*id, self.active_panel_id);
             }
+            !unused
         });
     }
 
@@ -2035,35 +1782,7 @@ impl Context {
             // self.build_draw_list(&draw_list);
         }
 
-        // for &id in &self.draw_order {
-        //     let name = self.panels[id].name.clone();
-        //     let draw_list = self.panels[id].draw_list.borrow();
-        //     // println!("{} draw_list:\n{:#?}", self.panels[id].name, draw_list);
-        //     for cmd in &draw_list.cmd_buffer {
-        //         let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
-        //         let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
-
-        //         let mut curr_clip = draw_buff.current_clip_rect();
-        //         curr_clip.min = curr_clip.min.max(Vec2::ZERO);
-        //         curr_clip.max = curr_clip.max.min(self.draw.screen_size);
-
-        //         let mut clip = cmd.clip_rect;
-        //         clip.min = clip.min.max(Vec2::ZERO);
-        //         clip.max = clip.max.min(self.draw.screen_size);
-
-        //         if cmd.clip_rect_used {
-        //             draw_buff.set_clip_rect(cmd.clip_rect);
-        //         } else if !draw_buff.current_clip_rect().contains_rect(clip) {
-        //             draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
-        //         }
-
-        //         draw_buff.push(vtx, idx);
-        //     }
-        // }
-
         self.upload_draw_data();
-        // println!("final:\n{:#?}", self.draw.call_list);
-        // println!("------------------------------------------");
     }
 
     pub fn build_dbg_draw_data(&mut self) {
@@ -2114,6 +1833,14 @@ pub struct Panel {
     // TODO[CHECK]: currently only used when placing the items. i.e. cursor position is not offset
     // by scroll, scroll is only added when generating the item rectangle
     pub scroll: Vec2,
+
+    // scroll will take on this value next frame
+    // we do this because sizing is computed based on cursor positions and cursor positions
+    // are affected by scrolling leading to a feedback loop
+    // TODO[CHECK]: currently we only clamp the scroll at the next begin(), i.e. when applying to
+    // scroll. otherwise panel does not scroll back automatically when resizing (why?)
+    pub next_scroll: Vec2,
+    pub indent: f32,
 
     /// size of the content of a panel
     ///
@@ -2174,6 +1901,8 @@ impl Panel {
             // spacing: 10.0,
             pos: Vec2::splat(30.0),
             scroll: Vec2::ZERO,
+            next_scroll: Vec2::ZERO,
+            indent: 0.0,
 
             full_content_size: Vec2::ZERO,
             full_size: Vec2::ZERO,
@@ -2256,7 +1985,7 @@ impl Panel {
         let valid_both = full_width > w_both || full_height > h_both;
 
         // Return the first valid state in priority order
-        if valid_none {
+        let (x, y) = if valid_none {
             (false, false)
         } else if valid_h {
             (true, false)
@@ -2264,22 +1993,15 @@ impl Panel {
             (false, true)
         } else {
             (true, true)
-        }
+        };
+
+        (
+            x || !self.flags.has(PanelFlags::DONT_KEEP_SCROLLBAR_PAD)
+                && self.flags.has(PanelFlags::DRAW_H_SCROLLBAR),
+            y || !self.flags.has(PanelFlags::DONT_KEEP_SCROLLBAR_PAD)
+                && self.flags.has(PanelFlags::DRAW_V_SCROLLBAR),
+        )
     }
-
-    // pub fn needs_scrollbars2(&self) -> (bool, bool) {
-    //     let base = self.visible_content_start_pos(); // content start (without scroll)
-    //     let full = Rect::from_min_max(base, base + self.full_content_size);
-
-    //     let max_view = self.pos + self.size - Vec2::splat(self.padding);
-    //     let min_view = base;
-    //     let view = Rect::from_min_max(min_view, max_view);
-
-    //     let v = full.max.y > view.max.y || full.min.y < view.min.y;
-    //     let h = full.max.x > view.max.x || full.min.x < view.min.x;
-
-    //     (h, v)
-    // }
 
     fn scroll_min(&self) -> Vec2 {
         // use the unscrolled content origin (cursor.content_start_pos) so bounds don't depend on self.scroll
@@ -2343,10 +2065,15 @@ impl Panel {
     //     Vec2::new(x, y)
     // }
 
+    // pub fn set_scroll(&mut self, scroll: Vec2) {
+    //     let min = self.scroll_min();
+    //     let max = self.scroll_max();
+    //     self.next_scroll = scroll.min(max).max(min);
+    // }
+
     pub fn move_scroll(&mut self, delta: Vec2) {
-        let min = self.scroll_min();
-        let max = self.scroll_max();
-        self.scroll = (self.scroll + delta).max(min).min(max);
+        self.next_scroll = self.scroll + delta;
+        // self.set_scroll(self.scroll + delta);
     }
 
     pub fn visible_content_rect(&self) -> Rect {
@@ -2404,8 +2131,8 @@ impl Panel {
     }
 
     pub fn cursor_pos(&self) -> Vec2 {
-        self._cursor.borrow().pos.round()
-        // self._cursor.borrow().pos + self.scroll
+        // self._cursor.borrow().pos.round()
+        self._cursor.borrow().pos + self.scroll
     }
 
     pub fn cursor_max_pos(&self) -> Vec2 {
@@ -2418,6 +2145,7 @@ impl Panel {
         let mut max = self.pos + self.size - Vec2::splat(self.padding);
         let (x_scroll, y_scroll) = self.needs_scrollbars();
 
+        let flags = self.flags;
         if x_scroll {
             max.x = max.x - self.scrollbar_width - self.scrollbar_padding;
         }
@@ -2494,6 +2222,8 @@ pub struct Cursor {
     pub line_height: f32,
     pub prev_line_height: f32,
     pub is_same_line: bool,
+
+    pub indent: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2609,6 +2339,7 @@ stacked_fields_struct!(Style {
     panel_outline: Outline,
     panel_hover_outline: Outline,
     panel_padding: f32,
+
     scrollbar_width: f32,
     scrollbar_padding: f32,
 
@@ -2817,6 +2548,22 @@ impl PanelMap {
         assert!(!id.is_null());
         self.map.insert(id, panel);
     }
+
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&Id, &mut Panel) -> bool,
+    {
+        self.map.retain(f);
+    }
+}
+
+impl IntoIterator for PanelMap {
+    type Item = (Id, Panel);
+    type IntoIter = std::collections::hash_map::IntoIter<Id, Panel>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.into_iter()
+    }
 }
 
 impl<'a> IntoIterator for &'a PanelMap {
@@ -2824,6 +2571,29 @@ impl<'a> IntoIterator for &'a PanelMap {
     type IntoIter = std::collections::hash_map::Iter<'a, Id, Panel>;
     fn into_iter(self) -> Self::IntoIter {
         (&self.map).iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut PanelMap {
+    type Item = (&'a Id, &'a mut Panel);
+    type IntoIter = std::collections::hash_map::IterMut<'a, Id, Panel>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter_mut()
+    }
+}
+
+impl FromIterator<(Id, Panel)> for PanelMap {
+    fn from_iter<I: IntoIterator<Item = (Id, Panel)>>(iter: I) -> Self {
+        PanelMap {
+            map: HashMap::from_iter(iter),
+        }
+    }
+}
+
+impl Extend<(Id, Panel)> for PanelMap {
+    fn extend<I: IntoIterator<Item = (Id, Panel)>>(&mut self, iter: I) {
+        self.map.extend(iter);
     }
 }
 
@@ -2848,7 +2618,16 @@ impl std::ops::IndexMut<Id> for PanelMap {
 //---------------------------------------------------------------------------------------
 
 macros::flags!(ItemFlags: MOVE_CURSOR_NO);
-macros::flags!(PanelFlags: NO_TITLEBAR, NO_FOCUS, NO_MOVE, NO_RESIZE, ONLY_MOVE_FROM_TITLEBAR, DRAW_H_SCROLLBAR, DRAW_V_SCROLLBAR);
+macros::flags!(PanelFlags:
+    NO_TITLEBAR,
+    NO_FOCUS,
+    NO_MOVE,
+    NO_RESIZE,
+    ONLY_MOVE_FROM_TITLEBAR,
+    DRAW_H_SCROLLBAR,
+    DRAW_V_SCROLLBAR,
+    DONT_KEEP_SCROLLBAR_PAD,
+);
 
 macros::flags!(
     Signal:
@@ -3015,7 +2794,6 @@ impl DrawList {
     }
 
     pub fn set_clip_rect(&mut self, mut rect: Rect) {
-
         if rect == Rect::ZERO {
             log::warn!("zero clip rect set");
         }
@@ -3032,7 +2810,7 @@ impl DrawList {
     // to add another render pass
     pub fn push_clip_rect(&mut self, rect: Rect) {
         if !self.clip_content {
-            return
+            return;
         }
         self.clip_stack.push(rect);
         self.set_clip_rect(rect);
@@ -4377,6 +4155,8 @@ pub mod PhosphorFont {
     pub const MAXIMIZE_OFF: &'static str = "\u{E0F8}";
     pub const MAXIMIZE: &'static str = "\u{E3F0}";
     pub const MINIMIZE: &'static str = "\u{E32A}";
+    pub const CARET_RIGHT: &'static str = "\u{E13A}";
+    pub const CARET_DOWN: &'static str = "\u{E136}";
 }
 
 //---------------------------------------------------------------------------------------
