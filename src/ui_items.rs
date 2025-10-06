@@ -1,7 +1,10 @@
 use glam::Vec2;
 
 use crate::{
-    core::RGBA, mouse::{CursorIcon, MouseBtn}, rect::Rect, ui::{self, CornerRadii, Id}
+    core::RGBA,
+    mouse::{CursorIcon, MouseBtn},
+    rect::Rect,
+    ui::{self, CornerRadii, Id},
 };
 
 macro_rules! ui_text {
@@ -168,12 +171,12 @@ impl ui::Context {
         *b
     }
 
-    pub fn separator_h(&mut self, thickness: f32) {
+    pub fn separator_h(&mut self, thickness: f32, fill: RGBA) {
         let width = self.available_content().x;
         let rect = self.place_item(Id::NULL, Vec2::new(width, thickness));
         let col = self.style.panel_dark_bg();
 
-        self.draw(|list| list.rect(rect.min, rect.max).fill(col).add());
+        self.draw(|list| list.rect(rect.min, rect.max).fill(fill).add());
     }
 
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
@@ -315,14 +318,18 @@ impl ui::Context {
     }
 
     pub fn begin_tabbar(&mut self, label: &str) {
-        // TODO[NOTE] tabbar stack 
+        // TODO[NOTE] tabbar stack
         let id = self.gen_id(label);
         self.tabbars.map.entry(id).or_insert(ui::TabBar::new());
         self.current_tabbar_id = id;
         self.push_id(id);
-        
+
         let avail = self.available_content();
+
+        self.push_style(ui::StyleVar::SpacingV(0.0));
         let rect = self.place_item(id, Vec2::new(avail.x, self.style.line_height()));
+        self.pop_style();
+        self.separator_h(3.0, self.style.btn_hover());
 
         let cursor = self.get_current_panel()._cursor.clone().into_inner();
 
@@ -332,23 +339,17 @@ impl ui::Context {
         tb.cursor_backup = cursor;
         tb.bar_rect = rect;
 
-        let mut offset = 0.0;
-        for tab in &mut tb.tabs {
-            tab.offset = offset;
-            offset += tab.width;
-            offset += 10.0;
-        }
-
+        tb.layout_tabs();
     }
 
     pub fn end_tabbar(&mut self) {
         let tb = &self.tabbars[self.current_tabbar_id];
-        let cursor = tb.cursor_backup;
+        // let cursor = tb.cursor_backup;
         let tb_id = tb.id;
         assert!(self.pop_id() == tb_id);
 
         self.current_tabbar_id = Id::NULL;
-        self.get_current_panel()._cursor.replace(cursor);
+        // self.get_current_panel()._cursor.replace(cursor);
     }
 
     pub fn tabitem(&mut self, label: &str) -> bool {
@@ -386,151 +387,19 @@ impl ui::Context {
         let rect = Rect::from_min_size(tb_rect.min + Vec2::new(item.offset, 0.0), tab_size);
         let sig = self.register_rect(id, rect);
 
-        let (btn_col, text_col) = if sig.pressed() || is_selected {
-            (self.style.btn_press(), self.style.btn_press_text())
-        } else if sig.hovering() {
+        let (btn_col, text_col) = if is_selected {
             (self.style.btn_hover(), self.style.text_col())
-        } else {
+        } else if sig.hovering() {
             (self.style.btn_default(), self.style.text_col())
+        } else {
+            (self.style.panel_bg(), self.style.text_col())
         };
 
         let tb = &mut self.tabbars[tb_id];
-        if sig.dragging() && self.active_id == id && !tb.is_dragging {
-            tb.is_dragging = true;
-            tb.selected_tab_id = id;
-            tb.dragging_offset = rect.min.x - self.mouse.pos.x;
-        }
 
-        // compute item_pos (may be dragged)
-        let mut item_pos = rect.min;
-
-        if tb.is_dragging && tb.selected_tab_id == id {
-            item_pos.x = tb.dragging_offset + self.mouse.pos.x;
-        }
-
-        item_pos.x = item_pos.x.max(tb_rect.min.x).min(tb_rect.max.x - rect.width());
-
-        let text_pos =
-            item_pos + Vec2::new((item.width - text_dim.x) * 0.5, (tb_rect.height() - text_dim.y) * 0.5);
-
-        if tb.is_dragging && tb.selected_tab_id == id {
-            self.draw_over(|list| {
-                list.rect(item_pos, item_pos + rect.size())
-                    .fill(btn_col)
-                    .corners(CornerRadii::top(self.style.btn_corner_radius()))
-                    .add();
-
-                list.add_text(text_pos, &text_shape, text_col);
-            });
-        } else {
-            self.draw(|list| {
-                list.rect(item_pos, item_pos + rect.size())
-                    .fill(btn_col)
-                    .corners(CornerRadii::top(self.style.btn_corner_radius()))
-                    .add();
-
-                list.add_text(text_pos, &text_shape, text_col);
-            });
-        }
-
-        // handle end of drag: when the selected tab was being dragged and mouse is released,
-        // remove the tab from its old slot and insert at the new computed slot based on center.
-        let tb = &mut self.tabbars[tb_id];
-        if !self.mouse.pressed(MouseBtn::Left) && tb.is_dragging && tb.selected_tab_id == id {
-            // find original index (must exist)
-            let orig_index = tb.tabs.iter().position(|t| t.id == id).expect("dragged tab must exist");
-            // remove the item from the list
-            let mut moving_item = tb.tabs.remove(orig_index);
-
-            // compute center of dragged item relative to bar start
-            let center_x = item_pos.x + moving_item.width * 0.5;
-            let rel_center = center_x - tb_rect.min.x;
-
-            // find insertion index by comparing to midpoints of remaining tabs
-            let mut insert_index = 0usize;
-            let mut placed = false;
-            for (i, t) in tb.tabs.iter().enumerate() {
-                let midpoint = t.offset + t.width * 0.5;
-                if rel_center <= midpoint {
-                    insert_index = i;
-                    placed = true;
-                    break;
-                } else {
-                    insert_index = i + 1;
-                }
-            }
-            if !placed {
-                insert_index = tb.tabs.len();
-            }
-
-            // insert moving item at new index
-            tb.tabs.insert(insert_index, moving_item);
-
-            // recompute offsets for all tabs
-            let mut offset = 0.0;
-            for t in &mut tb.tabs {
-                t.offset = offset;
-                offset += t.width + 10.0;
-            }
-
-            // reset dragging state
-            tb.is_dragging = false;
-            tb.dragging_offset = 0.0;
-        }
-
-        if sig.released() {
-            self.tabbars[tb_id].selected_tab_id = id;
-        }
-
-        is_selected
-    }
-
-
-    pub fn tabitem2(&mut self, label: &str) -> bool {
-        let tb_id = self.current_tabbar_id;
-        let tb_rect = self.tabbars[tb_id].bar_rect;
-        assert!(!tb_id.is_null());
-
-        let id = self.gen_id(label);
-        let tb = &mut self.tabbars[tb_id];
-        if tb.tabs.is_empty() {
+        if sig.pressed() {
             tb.selected_tab_id = id;
         }
-
-        let text_shape = self.shape_text(label, self.style.text_size());
-        let text_dim = text_shape.size();
-        let vert_pad = ((tb_rect.height() - text_dim.y) / 2.0).max(0.0);
-        let item_width = vert_pad * 2.0 + text_dim.x;
-
-        let tb = &mut self.tabbars[tb_id];
-        let is_selected = tb.selected_tab_id == id;
-
-        let indx = tb.tabs.iter().position(|t| t.id == id);
-        let Some(indx) = indx else {
-            let mut item = ui::TabItem::default();
-            item.id = id;
-            item.width = item_width;
-            tb.tabs.push(item);
-            return is_selected;
-        };
-
-        
-        tb.tabs[indx].width = item_width;
-        let item = tb.tabs[indx];
-
-        let tab_size = Vec2::new(item.width, tb_rect.height());
-        let rect = Rect::from_min_size(tb_rect.min + Vec2::new(item.offset, 0.0), tab_size);
-        let sig = self.register_rect(id, rect);
-
-        let (btn_col, text_col) = if sig.pressed() || is_selected {
-            (self.style.btn_press(), self.style.btn_press_text())
-        } else if sig.hovering() {
-            (self.style.btn_hover(), self.style.text_col())
-        } else {
-            (self.style.btn_default(), self.style.text_col())
-        };
-
-        let tb = &mut self.tabbars[tb_id];
         if sig.dragging() && self.active_id == id && !tb.is_dragging {
             tb.is_dragging = true;
             tb.selected_tab_id = id;
@@ -547,10 +416,21 @@ impl ui::Context {
             item_pos.x = tb.dragging_offset + self.mouse.pos.x;
         }
 
-        item_pos.x = item_pos.x.max(tb_rect.min.x).min(tb_rect.max.x - rect.width());
+        if is_selected {
+            let new_indx = tb.get_insert_pos(item_pos.x, rect.width(), indx);
+            tb.move_tab(indx, new_indx);
+        }
 
-        let text_pos =
-            item_pos + Vec2::new((item.width - text_dim.x) * 0.5, (tb_rect.height() - text_dim.y) * 0.5);
+        item_pos.x = item_pos
+            .x
+            .max(tb_rect.min.x)
+            .min(tb_rect.max.x - rect.width());
+
+        let text_pos = item_pos
+            + Vec2::new(
+                (item.width - text_dim.x) * 0.5,
+                (tb_rect.height() - text_dim.y) * 0.5,
+            );
 
         if tb.is_dragging && tb.selected_tab_id == id {
             self.draw_over(|list| {
@@ -565,36 +445,21 @@ impl ui::Context {
             self.draw(|list| {
                 list.rect(item_pos, item_pos + rect.size())
                     .fill(btn_col)
-                    .corners(CornerRadii::top(self.style.btn_corner_radius()))
+                    .corners(CornerRadii::top(self.style.btn_corner_radius() * 1.5))
                     .add();
 
                 list.add_text(text_pos, &text_shape, text_col);
             });
         }
 
-        if sig.released() {
-            self.tabbars[tb_id].selected_tab_id = id;
-        }
-
         is_selected
-        
     }
 }
-
-
-
-
-
-
-
-
 
 // BEGIN INTERN
 //---------------------------------------------------------------------------------------
 
 impl ui::Context {
-
-
     pub fn checkbox_intern(&mut self, label: &str) -> bool {
         let id = self.gen_id(label);
         let mut toggle = *self.widget_data.get_or_insert(id, false);

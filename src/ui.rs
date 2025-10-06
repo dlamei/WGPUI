@@ -73,7 +73,6 @@ pub struct Context {
     pub tabbars: IdMap<TabBar>,
     pub tabbar_count: u32,
 
-
     // TODO[CHECK]: still needed? how to use exactly
     pub prev_item_data: PrevItemData,
     pub panel_action: PanelAction,
@@ -253,6 +252,9 @@ impl Context {
         }
     }
 
+    // TODO[BUG]: scrolling on mousepad with two fingers and one finger leaves the mousepad results
+    // in a scroll upwards
+    // TODO[NOTE]: scroll velocity
     pub fn set_mouse_scroll(&mut self, delta: Vec2) {
         if !self.active_panel_id.is_null() {
             self.panels[self.active_panel_id].move_scroll(delta * self.scroll_speed);
@@ -1219,7 +1221,11 @@ impl Context {
     pub fn update_hot_id(&mut self, id: Id, bb: Rect) {
         let is_topmost =
             self.prev_hot_panel_id == self.current_panel_id || self.prev_hot_panel_id.is_null();
-        if bb.contains(self.mouse.pos) && !id.is_null() && self.panel_action.is_none() && is_topmost
+        if bb.contains(self.mouse.pos)
+            && !id.is_null()
+            && self.panel_action.is_none()
+            && is_topmost
+            && !self.mouse.dragging(MouseBtn::Left)
         {
             self.hot_id = id;
         }
@@ -1451,55 +1457,22 @@ impl Context {
         let dt = (now - self.prev_frame_time).as_secs_f32();
         let fps = 1.0 / dt;
         self.prev_frame_time = now;
-        ui_text!(self: "dt: {:0.3?}\t, fps: {fps:0.1?}", dt * 1000.0);
+        ui_text!(self: "dt: {:0.1?}\t, fps: {fps:0.1?}", dt * 1000.0);
 
         // self.pop_style();
 
         ui_text!(self: "action: {}", self.panel_action);
         ui_text!(self: "n. of draw calls: {}", self.n_draw_calls);
 
-        let mut tmp = self.draw_wireframe;
-        self.checkbox("draw wireframe", &mut tmp);
-        self.draw_wireframe = tmp;
-
-        let mut tmp = self.clip_content;
-        self.checkbox("clip content", &mut tmp);
-        self.clip_content = tmp;
-
-        let mut tmp = self.draw_clip_rect;
-        self.checkbox("draw clip rect", &mut tmp);
-        self.draw_clip_rect = tmp;
-
-        let mut tmp = self.draw_content_outline;
-        self.checkbox("draw content outline", &mut tmp);
-        self.draw_content_outline = tmp;
-
-        let mut tmp = self.draw_full_content_outline;
-        self.checkbox("draw full content outline", &mut tmp);
-        self.draw_full_content_outline = tmp;
-
-        let mut tmp = self.draw_item_outline;
-        self.checkbox("draw item outline", &mut tmp);
-        self.draw_item_outline = tmp;
-
-        if self.collapsing_header_intern("show font atlas") {
-            self.indent(20.0);
-            self.move_down(20.0);
-            let avail = self.available_content().min(Vec2::splat(800.0));
-            let uv_min = self.glyph_cache.borrow().min_alloc_uv;
-            let uv_max = self.glyph_cache.borrow().max_alloc_uv;
-            let size = uv_max - uv_min;
-            let scale = (avail.x / size.x).min(avail.y / size.y);
-            let fitted_size = size * scale;
-            self.image(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, 1);
-            self.unindent(20.0);
-        }
-
         // self.separator_h(4.0);
 
-        if self.collapsing_header_intern("settings") {
-            self.indent(20.0);
-            self.move_down(20.0);
+        self.move_down(10.0);
+        self.begin_tabbar("tabbar");
+
+        self.indent(10.0);
+        self.move_down(10.0);
+
+        if self.tabitem("Style Settings") {
             let mut v = self.style.titlebar_height();
             self.slider_f32("titlebar height", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::TitlebarHeight(v));
@@ -1551,24 +1524,47 @@ impl Context {
             let mut v = self.style.panel_corner_radius();
             self.slider_f32("panel corners", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::PanelCornerRadius(v));
-            self.unindent(20.0);
         }
 
-
-        self.begin_tabbar("tabbar");
-
-        if self.tabitem("tab 1") {
-            self.text("tab 1");
+        if self.tabitem("Textures") {
+            if self.collapsing_header_intern("Font Atlas") {
+                let avail = self.available_content().min(Vec2::splat(800.0));
+                let uv_min = self.glyph_cache.borrow().min_alloc_uv;
+                let uv_max = self.glyph_cache.borrow().max_alloc_uv;
+                let size = uv_max - uv_min;
+                let scale = (avail.x / size.x).min(avail.y / size.y);
+                let fitted_size = size * scale;
+                self.image(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, 1);
+            }
         }
 
-        if self.tabitem("tab 2") {
-            self.text("tab 2");
+        if self.tabitem("Debug") {
+            let mut tmp = self.draw_wireframe;
+            self.checkbox("draw wireframe", &mut tmp);
+            self.draw_wireframe = tmp;
+
+            let mut tmp = self.clip_content;
+            self.checkbox("clip content", &mut tmp);
+            self.clip_content = tmp;
+
+            let mut tmp = self.draw_clip_rect;
+            self.checkbox("draw clip rect", &mut tmp);
+            self.draw_clip_rect = tmp;
+
+            let mut tmp = self.draw_content_outline;
+            self.checkbox("draw content outline", &mut tmp);
+            self.draw_content_outline = tmp;
+
+            let mut tmp = self.draw_full_content_outline;
+            self.checkbox("draw full content outline", &mut tmp);
+            self.draw_full_content_outline = tmp;
+
+            let mut tmp = self.draw_item_outline;
+            self.checkbox("draw item outline", &mut tmp);
+            self.draw_item_outline = tmp;
         }
 
-        if self.tabitem("tab 3") {
-            self.text("tab 3");
-        }
-
+        self.unindent(10.0);
         self.end_tabbar();
 
         self.end();
@@ -2672,6 +2668,15 @@ impl TabBar {
         }
     }
 
+    pub fn layout_tabs(&mut self) {
+        let mut offset = 0.0;
+        for tab in &mut self.tabs {
+            tab.offset = offset;
+            offset += tab.width;
+            offset += 5.0;
+        }
+    }
+
     pub fn find_tab(&self, id: Id) -> Option<&TabItem> {
         assert!(!id.is_null());
         self.tabs.iter().find(|tab| tab.id == id)
@@ -2680,6 +2685,68 @@ impl TabBar {
     pub fn find_mut_tab(&mut self, id: Id) -> Option<&mut TabItem> {
         assert!(!id.is_null());
         self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+
+    pub fn get_insert_pos(&self, pos: f32, width: f32, current_idx: usize) -> usize {
+        if self.tabs.is_empty() {
+            return 0;
+        }
+
+        let drag_center = pos + width * 0.5;
+
+        // Add deadzone: require crossing significantly past the midpoint to trigger a swap
+        let deadzone = if current_idx < self.tabs.len() {
+            self.tabs[current_idx].width * 0.25 // 25% of current tab width
+        } else {
+            20.0 // Default deadzone
+        };
+
+        // Find which tab position the drag center belongs to
+        let mut insert_idx = 0;
+
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let tab_start = self.bar_rect.min.x + tab.offset;
+            let tab_end = tab_start + tab.width;
+            let tab_center = tab_start + tab.width * 0.5;
+
+            if i == current_idx {
+                // Skip the current tab in calculations
+                continue;
+            }
+
+            // Check if drag center is past this tab's adjusted center
+            let threshold = if i < current_idx {
+                // Moving left: need to cross center + deadzone
+                tab_center + deadzone
+            } else {
+                // Moving right: need to cross center - deadzone
+                tab_center - deadzone
+            };
+
+            if drag_center < threshold {
+                insert_idx = i;
+                break;
+            }
+            insert_idx = i + 1;
+        }
+
+        // Adjust for removal of current tab
+        if insert_idx > current_idx {
+            insert_idx -= 1;
+        }
+
+        insert_idx.min(self.tabs.len().saturating_sub(1))
+    }
+
+    pub fn move_tab(&mut self, orig: usize, new: usize) {
+        if orig >= self.tabs.len() || new >= self.tabs.len() || orig == new {
+            return;
+        }
+
+        let item = self.tabs.remove(orig);
+        self.tabs.insert(new, item);
+
+        self.layout_tabs();
     }
 }
 
