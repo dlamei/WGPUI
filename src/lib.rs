@@ -5,6 +5,7 @@ mod mouse;
 pub mod rect;
 mod ui;
 mod ui_items;
+mod text_input;
 
 use std::sync::Arc;
 

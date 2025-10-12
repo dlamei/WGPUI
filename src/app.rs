@@ -376,10 +376,8 @@ impl App {
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
         use winit::keyboard::{KeyCode, PhysicalKey};
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::KeyD) => if event.state.is_pressed() {},
-            _ => (),
-        }
+
+        self.ui.on_key_event(event);
     }
 
     fn on_redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {

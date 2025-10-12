@@ -1,10 +1,7 @@
 use glam::Vec2;
 
 use crate::{
-    core::RGBA,
-    mouse::{CursorIcon, MouseBtn},
-    rect::Rect,
-    ui::{self, CornerRadii, Id},
+    core::RGBA, ctext, mouse::{CursorIcon, MouseBtn}, rect::Rect, text_input::TextInputState, ui::{self, CornerRadii, Id}
 };
 
 macro_rules! ui_text {
@@ -315,6 +312,66 @@ impl ui::Context {
         self.move_down(pad);
 
         self.draw(|list| list.add_text(rect.min, &shape, self.style.text_col()));
+    }
+
+    pub fn text_input(&mut self, text: &str) {
+        use ctext::Edit;
+        let text_height = self.style.text_size();
+        let line_height = self.style.line_height().max(text_height);
+
+        let pad = (line_height - text_height) / 2.0;
+        self.move_down(pad);
+
+        let p = self.get_current_panel();
+        let id = p.gen_id(text);
+
+        if !self.text_input_states.contains_id(id) {
+        let itm = ui::TextItem::new(text.to_string(), self.style.text_size(), 1.0, "Inter");
+            self.text_input_states.insert(id, TextInputState::new(&mut self.font_table.borrow_mut(), itm))
+        }
+
+        let input = self.text_input_states.get_mut(id).unwrap();
+        input.edit.shape_as_needed(&mut self.font_table.borrow_mut().sys, true);
+        let shape = input.shape(&mut self.font_table.borrow_mut(), &mut self.glyph_cache.borrow_mut(), &mut self.draw.wgpu);
+        let text_dim = shape.size();
+        let total_h = self.style.line_height();
+
+        let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
+        let horiz_pad = vert_pad;
+        let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
+
+        let rect = self.place_item(id, size);
+        let sig = self.register_item(id);
+
+        let start_drag_outside = self
+            .mouse
+            .drag_start(MouseBtn::Left)
+            .map_or(false, |pos| !rect.contains(pos));
+
+        let outline_col = if self.active_id == id {
+            self.style.btn_hover()
+        } else {
+            self.style.panel_dark_bg()
+        };
+        // let (btn_col, text_col) = if sig.pressed() && !start_drag_outside {
+        //     (active, self.style.btn_press_text())
+        // } else if sig.hovering() {
+        //     (hover, self.style.text_col())
+        // } else {
+        //     (default, self.style.text_col())
+        // };
+
+        let text_pos =
+            rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
+
+        self.draw(|list| {
+            list.rect(rect.min, rect.max)
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .outline(ui::Outline::new(outline_col, 3.0))
+                .add();
+
+            list.add_text(text_pos, &shape, self.style.text_col());
+        });
     }
 
     pub fn begin_tabbar(&mut self, label: &str) {

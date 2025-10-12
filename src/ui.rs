@@ -8,11 +8,7 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Vertex as VertexTyp,
-    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
-    mouse::{CursorIcon, MouseBtn, MouseState},
-    rect::Rect,
+    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{CursorIcon, MouseBtn, MouseState}, rect::Rect, text_input::TextInputState, Vertex as VertexTyp
 };
 
 // TODO[NOTE]: framepadding style?
@@ -72,6 +68,8 @@ pub struct Context {
     pub current_tabbar_id: Id,
     pub tabbars: IdMap<TabBar>,
     pub tabbar_count: u32,
+
+    pub text_input_states: IdMap<TextInputState>,
 
     // TODO[CHECK]: still needed? how to use exactly
     pub prev_item_data: PrevItemData,
@@ -164,6 +162,7 @@ impl Context {
             current_tabbar_id: Id::NULL,
             tabbars: IdMap::new(),
             tabbar_count: 0,
+            text_input_states: IdMap::new(),
 
             current_panel_id: Id::NULL,
             prev_item_data: PrevItemData::new(),
@@ -250,6 +249,44 @@ impl Context {
             self.cursor_icon = icon;
             self.cursor_icon_changed = true;
         }
+    }
+
+    pub fn on_key_event(&mut self, key: &winit::event::KeyEvent) {
+        use ctext::Edit;
+        use winit::{event::ElementState, keyboard::{PhysicalKey, KeyCode}};
+
+        let Some(input) = self.text_input_states.get_mut(self.active_id) else {
+            return
+        };
+
+        let pressed = match key.state {
+            ElementState::Pressed => true,
+            ElementState::Released => false,
+        };
+        
+        let sys = &mut self.font_table.borrow_mut().sys;
+        if pressed {
+            match key.physical_key {
+                PhysicalKey::Code(KeyCode::ArrowRight) => {
+                    input.edit.action(sys, ctext::Action::Motion(ctext::Motion::Right));
+                },
+                PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                    input.edit.action(sys, ctext::Action::Motion(ctext::Motion::Left));
+                },
+                PhysicalKey::Code(KeyCode::Backspace) => {
+                    input.edit.action(sys, ctext::Action::Backspace)
+                }
+                PhysicalKey::Code(KeyCode::Delete) => {
+                    input.edit.action(sys, ctext::Action::Delete)
+                }
+                _ => {
+                    if let Some(text) = &key.text {
+                        input.edit.insert_string(text, None);
+                    }
+                },
+            }
+        }
+
     }
 
     // TODO[BUG]: scrolling on mousepad with two fingers and one finger leaves the mousepad results
@@ -543,7 +580,7 @@ impl Context {
 
         // let p = &self.panels[id];
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
-            let (min, max, close) = if p.id == self.window_panel_id {
+            let (tb, min, max, close) = if p.id == self.window_panel_id {
                 self.draw_panel_decorations(true, true, true)
             } else {
                 self.draw_panel_decorations(false, false, true)
@@ -553,7 +590,7 @@ impl Context {
                 if min.released() {
                     self.window.minimize();
                 }
-                if max.released() {
+                if max.released() || tb.double_clicked() {
                     self.window.toggle_maximize();
                 }
                 if close.released() {
@@ -682,7 +719,7 @@ impl Context {
         minimize: bool,
         maximize: bool,
         close: bool,
-    ) -> (Signal, Signal, Signal) {
+    ) -> (Signal, Signal, Signal, Signal) {
         let p = self.get_current_panel();
         let move_id = p.move_id;
         let titlebar_height = p.titlebar_height;
@@ -709,7 +746,7 @@ impl Context {
             )
         });
 
-        self.register_rect(
+        let tb_sig = self.register_rect(
             move_id,
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
         );
@@ -791,7 +828,7 @@ impl Context {
             });
         }
 
-        (min_sig, max_sig, close_sig)
+        (tb_sig, min_sig, max_sig, close_sig)
     }
 
     pub fn update_panel_scroll(&mut self) {
@@ -1466,6 +1503,8 @@ impl Context {
 
         // self.separator_h(4.0);
 
+        self.text_input("test input");
+
         self.move_down(10.0);
         self.begin_tabbar("tabbar");
 
@@ -1663,12 +1702,7 @@ impl Context {
         let mut font_table = self.font_table.borrow_mut();
 
         let shaped_text = if !text_cache.contains_key(&itm) {
-            let shaped_text = shape_text_item(
-                itm.clone(),
-                &mut font_table,
-                &mut glyph_cache,
-                &self.draw.wgpu,
-            );
+            let shaped_text = itm.shape(&mut font_table, &mut glyph_cache, &self.draw.wgpu);
             text_cache.entry(itm).or_insert(shaped_text)
         } else {
             text_cache.get(&itm).unwrap()
@@ -1686,7 +1720,6 @@ impl Context {
 
     pub fn draw_text(&mut self, text: &str, pos: Vec2) {
         let shape = self.shape_text(text, 32.0);
-        let p = self.get_current_panel();
 
         for g in shape.glyphs.iter() {
             let min = g.meta.pos + pos;
@@ -4040,61 +4073,114 @@ impl FontTable {
     }
 }
 
-fn shape_text_item(
-    itm: TextItem,
-    fonts: &mut FontTable,
-    cache: &mut GlyphCache,
-    wgpu: &WGPU,
-) -> ShapedText {
-    let mut buffer = ctext::Buffer::new(
-        &mut fonts.sys,
-        ctext::Metrics {
-            font_size: itm.font_size(),
-            line_height: itm.scaled_line_height(),
-        },
-    );
+impl TextItem {
+    pub fn shape(&self, fonts: &mut FontTable, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
+        let mut buffer = ctext::Buffer::new(
+            &mut fonts.sys,
+            ctext::Metrics {
+                font_size: self.font_size(),
+                line_height: self.scaled_line_height(),
+            },
+        );
 
-    let font_attrib = fonts.get_font_attrib(itm.font);
-    buffer.set_size(&mut fonts.sys, itm.width(), itm.height());
-    buffer.set_text(
-        &mut fonts.sys,
-        &itm.string,
-        &font_attrib,
-        ctext::Shaping::Advanced,
-    );
-    buffer.shape_until_scroll(&mut fonts.sys, false);
+        let font_attrib = fonts.get_font_attrib(self.font);
+        buffer.set_size(&mut fonts.sys, self.width(), self.height());
+        buffer.set_text(
+            &mut fonts.sys,
+            &self.string,
+            &font_attrib,
+            ctext::Shaping::Advanced,
+        );
+        buffer.shape_until_scroll(&mut fonts.sys, false);
 
-    let mut glyphs = Vec::new();
-    let mut width = 0.0;
-    let mut height = 0.0;
+        let mut glyphs = Vec::new();
+        let mut width = 0.0;
+        let mut height = 0.0;
 
-    for run in buffer.layout_runs() {
-        width = run.line_w.max(width);
-        // TODO[CHECK]: is it the sum?
-        // height = run.line_height.max(height);
-        height += run.line_height;
+        for run in buffer.layout_runs() {
+            width = run.line_w.max(width);
+            // TODO[CHECK]: is it the sum?
+            // height = run.line_height.max(height);
+            height += run.line_height;
 
-        for g in run.glyphs {
-            let g_phys = g.physical((0.0, 0.0), 1.0);
-            let mut key = g_phys.cache_key;
-            // TODO[CHECK]: what does this do
-            key.x_bin = ctext::SubpixelBin::Three;
-            key.y_bin = ctext::SubpixelBin::Three;
+            for g in run.glyphs {
+                let g_phys = g.physical((0.0, 0.0), 1.0);
+                let mut key = g_phys.cache_key;
+                // TODO[CHECK]: what does this do
+                key.x_bin = ctext::SubpixelBin::Three;
+                key.y_bin = ctext::SubpixelBin::Three;
 
-            if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
-                glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
-                glyphs.push(glyph);
+                if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
+                    glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
+                    glyphs.push(glyph);
+                }
             }
         }
-    }
 
-    let text = ShapedText {
-        glyphs,
-        width,
-        height,
-    };
-    text
+        let text = ShapedText {
+            glyphs,
+            width,
+            height,
+        };
+        text
+    }
 }
+
+// fn shape_text_item(
+//     itm: TextItem,
+//     fonts: &mut FontTable,
+//     cache: &mut GlyphCache,
+//     wgpu: &WGPU,
+// ) -> ShapedText {
+//     let mut buffer = ctext::Buffer::new(
+//         &mut fonts.sys,
+//         ctext::Metrics {
+//             font_size: itm.font_size(),
+//             line_height: itm.scaled_line_height(),
+//         },
+//     );
+
+//     let font_attrib = fonts.get_font_attrib(itm.font);
+//     buffer.set_size(&mut fonts.sys, itm.width(), itm.height());
+//     buffer.set_text(
+//         &mut fonts.sys,
+//         &itm.string,
+//         &font_attrib,
+//         ctext::Shaping::Advanced,
+//     );
+//     buffer.shape_until_scroll(&mut fonts.sys, false);
+
+//     let mut glyphs = Vec::new();
+//     let mut width = 0.0;
+//     let mut height = 0.0;
+
+//     for run in buffer.layout_runs() {
+//         width = run.line_w.max(width);
+//         // TODO[CHECK]: is it the sum?
+//         // height = run.line_height.max(height);
+//         height += run.line_height;
+
+//         for g in run.glyphs {
+//             let g_phys = g.physical((0.0, 0.0), 1.0);
+//             let mut key = g_phys.cache_key;
+//             // TODO[CHECK]: what does this do
+//             key.x_bin = ctext::SubpixelBin::Three;
+//             key.y_bin = ctext::SubpixelBin::Three;
+
+//             if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
+//                 glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
+//                 glyphs.push(glyph);
+//             }
+//         }
+//     }
+
+//     let text = ShapedText {
+//         glyphs,
+//         width,
+//         height,
+//     };
+//     text
+// }
 
 impl TextItem {
     pub const RESOLUTION: f32 = 1024.0;
