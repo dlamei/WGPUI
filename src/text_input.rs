@@ -3,15 +3,12 @@ use glam::Vec2;
 
 use crate::{ctext, gpu::WGPU, ui};
 
-
-
 #[derive(Debug, Clone)]
 pub struct TextInputState {
     pub edit: ctext::Editor<'static>,
 }
 
 impl TextInputState {
-
     pub fn new(fonts: &mut ui::FontTable, text: ui::TextItem) -> Self {
         let mut buffer = ctext::Buffer::new(
             &mut fonts.sys,
@@ -31,13 +28,15 @@ impl TextInputState {
 
         let edit = ctext::Editor::new(buffer);
 
-        Self {
-            edit
-        }
+        Self { edit }
     }
 
-    pub fn shape(&self, fonts: &mut ui::FontTable, cache: &mut ui::GlyphCache, wgpu: &WGPU) -> ui::ShapedText {
-
+    pub fn shape(
+        &self,
+        fonts: &mut ui::FontTable,
+        cache: &mut ui::GlyphCache,
+        wgpu: &WGPU,
+    ) -> ui::ShapedText {
         let buffer = match self.edit.buffer_ref() {
             cosmic_text::BufferRef::Owned(b) => b,
             _ => panic!(),

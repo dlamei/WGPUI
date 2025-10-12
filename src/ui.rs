@@ -8,7 +8,12 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{CursorIcon, MouseBtn, MouseState}, rect::Rect, text_input::TextInputState, Vertex as VertexTyp
+    Vertex as VertexTyp,
+    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{CursorIcon, MouseBtn, MouseState},
+    rect::Rect,
+    text_input::TextInputState,
 };
 
 // TODO[NOTE]: framepadding style?
@@ -124,6 +129,7 @@ pub struct Context {
     pub prev_frame_time: Instant,
 
     pub mouse: MouseState,
+    pub modifiers: winit::keyboard::ModifiersState,
     pub cursor_icon: CursorIcon,
     pub cursor_icon_changed: bool,
     pub resize_threshold: f32,
@@ -194,6 +200,7 @@ impl Context {
             frame_count: 0,
             prev_frame_time: Instant::now(),
             mouse: MouseState::new(),
+            modifiers: winit::keyboard::ModifiersState::empty(),
             cursor_icon: CursorIcon::Default,
             cursor_icon_changed: false,
             resize_threshold: 10.0,
@@ -252,41 +259,56 @@ impl Context {
     }
 
     pub fn on_key_event(&mut self, key: &winit::event::KeyEvent) {
-        use ctext::Edit;
-        use winit::{event::ElementState, keyboard::{PhysicalKey, KeyCode}};
+        use ctext::{Edit, Action, Motion};
+        use winit::{
+            event::ElementState,
+            keyboard::{KeyCode, PhysicalKey},
+        };
 
         let Some(input) = self.text_input_states.get_mut(self.active_id) else {
-            return
+            return;
         };
 
-        let pressed = match key.state {
-            ElementState::Pressed => true,
-            ElementState::Released => false,
-        };
-        
-        let sys = &mut self.font_table.borrow_mut().sys;
-        if pressed {
-            match key.physical_key {
-                PhysicalKey::Code(KeyCode::ArrowRight) => {
-                    input.edit.action(sys, ctext::Action::Motion(ctext::Motion::Right));
-                },
-                PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                    input.edit.action(sys, ctext::Action::Motion(ctext::Motion::Left));
-                },
-                PhysicalKey::Code(KeyCode::Backspace) => {
-                    input.edit.action(sys, ctext::Action::Backspace)
-                }
-                PhysicalKey::Code(KeyCode::Delete) => {
-                    input.edit.action(sys, ctext::Action::Delete)
-                }
-                _ => {
-                    if let Some(text) = &key.text {
-                        input.edit.insert_string(text, None);
-                    }
-                },
-            }
+        if !matches!(key.state, ElementState::Pressed) {
+            return;
         }
 
+        let ctrl = self.modifiers.control_key();
+        let shift = self.modifiers.shift_key();
+
+        let sys = &mut self.font_table.borrow_mut().sys;
+        let edit = &mut input.edit;
+
+        match key.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowRight) => {
+                if ctrl {
+                    edit.action(sys, Action::Motion(Motion::RightWord))
+                } else {
+                    edit.action(sys, Action::Motion(Motion::Right))
+                }
+
+            }
+            PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                if ctrl {
+                    edit.action(sys, Action::Motion(Motion::LeftWord))
+                } else {
+                    edit.action(sys, Action::Motion(Motion::Left))
+                }
+            }
+            PhysicalKey::Code(KeyCode::Backspace) => {
+                if shift {
+                    edit.action(sys, Action::Backspace)
+                } else {
+                    edit.action(sys, Action::Backspace)
+                }
+            }
+            PhysicalKey::Code(KeyCode::Delete) => input.edit.action(sys, Action::Delete),
+            _ => {
+                if let Some(text) = &key.text {
+                    input.edit.insert_string(text, None);
+                }
+            }
+        }
     }
 
     // TODO[BUG]: scrolling on mousepad with two fingers and one finger leaves the mousepad results
@@ -4279,7 +4301,10 @@ impl GlyphCache {
         self.alloc_new_glyph(glyph_key, fonts, wgpu)
     }
 
-    pub fn alloc_rect(&mut self, w: u32, h: u32) -> Rect {
+    pub fn alloc_rect(&mut self, mut w: u32, mut h: u32) -> Rect {
+        // TODO[CHECK]: account for roundoff error?
+        w += 1;
+        h += 1;
         let r = self
             .alloc
             .allocate(etagere::Size::new(w as i32, h as i32))

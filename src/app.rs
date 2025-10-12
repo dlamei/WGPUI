@@ -319,6 +319,11 @@ impl App {
                 }
                 self.on_redraw(event_loop, id);
             }
+
+            WE::ModifiersChanged(modifiers) => {
+                self.ui.modifiers = modifiers.state();
+            }
+
             WE::KeyboardInput { event, .. } => {
                 self.on_keyboard(&event, event_loop);
             }
