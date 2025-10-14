@@ -8,7 +8,11 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, Vertex as VertexTyp
+    Vertex as VertexTyp,
+    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{Clipboard, CursorIcon, MouseBtn, MouseState},
+    rect::Rect,
 };
 
 // TODO[NOTE]: framepadding style?
@@ -99,6 +103,7 @@ pub struct Context {
     /// Can either be an item or a panel.
     /// This allows e.g. dragging the panel by its titlebar (item) or the panel itself
     pub active_id: Id,
+    pub active_id_changed: bool,
 
     pub prev_hot_id: Id,
     pub prev_active_id: Id,
@@ -156,15 +161,13 @@ pub struct Context {
 
 impl Context {
     pub fn new(wgpu: WGPUHandle, window: Window) -> Self {
-
-
         let mut font_table = FontTable::new();
         font_table.load_font(
             "Inter",
             include_bytes!("../res/Inter-VariableFont_opsz,wght.ttf").to_vec(),
         );
         font_table.load_font("Phosphor", include_bytes!("../res/Phosphor.ttf").to_vec());
-       
+
         let mut glyph_cache = GlyphCache::new(&wgpu, font_table.clone());
         let icon_uv = {
             let (w, h, data) = load_window_icon();
@@ -190,6 +193,7 @@ impl Context {
             hot_id: Id::NULL,
             hot_panel_id: Id::NULL,
             active_id: Id::NULL,
+            active_id_changed: false,
             active_panel_id: Id::NULL,
             window_panel_id: Id::NULL,
             // window_panel_titlebar_height: 0.0,
@@ -547,7 +551,9 @@ impl Context {
             prev_max_pos - p.pos + Vec2::splat(p.padding) + Vec2::splat(outline.offset()) * 2.0;
 
         if self.frame_count - p.frame_created == 1 {
-            p.size = p.full_size * 1.1;
+            // p.size = p.full_size * 1.1;
+            // TODO[NOTE]: account for scrollbar width?
+            p.size = p.full_size + Vec2::splat(p.padding);
         }
 
         let panel_pos = p.pos;
@@ -1337,7 +1343,7 @@ impl Context {
         rect
     }
 
-    pub fn update_hot_id(&mut self, id: Id, bb: Rect) {
+    pub fn update_hot_id(&mut self, id: Id, bb: Rect, flags: ItemFlags) {
         let is_topmost =
             self.prev_hot_panel_id == self.current_panel_id || self.prev_hot_panel_id.is_null();
         if bb.contains(self.mouse.pos)
@@ -1345,8 +1351,26 @@ impl Context {
             && self.panel_action.is_none()
             && is_topmost
             && !self.mouse.dragging(MouseBtn::Left)
+            && !self.expect_drag
         {
             self.hot_id = id;
+
+            // if self.mouse.pressed(MouseBtn::Left) && self.active_id != id
+            if self.active_id != id {
+                if flags.has(ItemFlags::ACTIVATE_ON_RELEASE) && self.mouse.released(MouseBtn::Left)
+                    || !flags.has(ItemFlags::ACTIVATE_ON_RELEASE)
+                        && self.mouse.pressed(MouseBtn::Left)
+                {
+                    self.active_id = id;
+                    self.active_id_changed = true;
+                }
+
+                // self.active_panel_id = self.hot_panel_id;
+
+                // if !self.active_panel_id.is_null() {
+                //     self.bring_panel_to_front(self.active_panel_id);
+                // }
+            }
         }
     }
 
@@ -1354,15 +1378,23 @@ impl Context {
         let p = &self.panels[self.current_panel_id];
         let clip_rect = p.current_clip_rect();
         if let Some(clip) = clip_rect.clip(rect) {
-            self.update_hot_id(id, clip);
+            self.update_hot_id(id, clip, ItemFlags::NONE);
         }
         self.get_item_signal(id, rect)
+    }
+
+    pub fn register_item(&mut self, id: Id) -> Signal {
+        self.register_item_ex(id, ItemFlags::NONE)
     }
 
     /// "registers" the item, i.e. potentially sets hot_id and returns the item signals
     ///
     /// assumes the item to be a rect at position of the cursor with given size
-    pub fn register_item(&mut self, id: Id) -> Signal {
+    pub fn register_item_ex(&mut self, id: Id, flags: ItemFlags) -> Signal {
+        if id.is_null() {
+            return Signal::NONE;
+        }
+
         assert!(self.prev_item_data.id == id);
         // let p = self.get_current_panel();
         if self.prev_item_data.is_hidden && self.active_id != id {
@@ -1370,7 +1402,7 @@ impl Context {
         }
 
         let clip_rect = self.prev_item_data.clipped_rect;
-        self.update_hot_id(id, clip_rect);
+        self.update_hot_id(id, clip_rect, flags);
 
         // if clip_rect.contains(self.mouse.pos) {
         //     // let is_over = if let Some(hot) = self.get_hot_panel() {
@@ -1482,6 +1514,9 @@ impl Context {
         self.panels[root_id].draw_order = new_order;
     }
 
+    pub fn begin_child(&mut self) {
+    }
+
     pub fn begin_frame(&mut self) {
         self.draw.clear();
         self.draw.screen_size = self.window.window_size();
@@ -1585,10 +1620,17 @@ impl Context {
         ui_text!(self: "action: {}", self.panel_action);
         ui_text!(self: "n. of draw calls: {}", self.n_draw_calls);
 
-        // self.separator_h(4.0);
+        self.separator_h(4.0, self.style.panel_dark_bg());
 
-        let multiline = self.checkbox_intern("multiline input (buggy)");
-        self.text_input_ex("this is a text input field", multiline);
+        let mut flags = TextInputFlags::NONE;
+        if self.checkbox_intern("multiline input (buggy)") {
+            flags |= TextInputFlags::MULTILINE
+        } 
+        if self.checkbox_intern("select text on activation") {
+            flags |= TextInputFlags::SELECT_ON_ACTIVE;
+        } 
+        self.text_input_ex("this is a text input field", flags);
+
 
         self.move_down(10.0);
         self.begin_tabbar("tabbar");
@@ -1695,22 +1737,38 @@ impl Context {
     }
 
     pub fn end_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+
+        if !self.style.var_stack.is_empty() {
+            log::warn!("style stack is not empty");
+        }
         // if self.mouse.pressed(MouseBtn::Left) {
         //     println!("{}, {}, {}: {}, {}", !self.mouse.dragging(MouseBtn::Left), !self.expect_drag, self.panel_action.is_none(), self.hot_panel_id, self.hot_id);
         // }
+
+        // update active panel
         if self.mouse.pressed(MouseBtn::Left)
             && !self.mouse.dragging(MouseBtn::Left)
             && !self.expect_drag
             && self.panel_action.is_none()
         // && self.hot_id != self.active_id
         {
-            let prev = self.active_id;
-            self.active_id = self.hot_id;
+            // set active id to panel id if we pressed mouse and dont hover any items
+            if self.hot_id.is_null() || self.panels.contains_id(self.hot_id) {
+                self.active_id = self.hot_id;
+            }
             self.active_panel_id = self.hot_panel_id;
+
+            // if prev != self.active_id {
+            //     self.active_id_changed = true;
+            // }
 
             if !self.active_panel_id.is_null() {
                 self.bring_panel_to_front(self.active_panel_id);
             }
+        }
+
+        if self.active_id != self.prev_active_id {
+            self.active_id_changed = false;
         }
 
         self.update_panel_scroll();
@@ -2903,7 +2961,11 @@ impl TextInputState {
 
         let edit = ctext::Editor::new(buffer);
 
-        Self { edit, fonts, multiline }
+        Self {
+            edit,
+            fonts,
+            multiline,
+        }
     }
 
     pub fn layout_text(&self, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
@@ -2956,6 +3018,23 @@ impl TextInputState {
         self.edit.copy_selection()
     }
 
+    pub fn copy_all(&self) -> String {
+        use ctext::Edit;
+        let mut text = String::new();
+
+        self.edit.with_buffer(|buf| {
+            let n_lines = buf.lines.len();
+            for (i, line) in buf.lines.iter().enumerate() {
+                text.push_str(line.text());
+                if i != n_lines - 1 {
+                    text.push('\n');
+                }
+            }
+        });
+
+        text
+    }
+
     pub fn paste(&mut self, text: &str) {
         use ctext::Edit;
         self.edit.insert_string(text, None)
@@ -2983,10 +3062,7 @@ impl TextInputState {
         self.edit.action(&mut self.fonts.sys(), Action::Escape);
     }
 
-    pub fn backspace(
-        &mut self,
-        mods: &winit::keyboard::ModifiersState,
-    ) {
+    pub fn backspace(&mut self, mods: &winit::keyboard::ModifiersState) {
         use ctext::{Action, Edit, Motion};
         let ctrl = mods.control_key();
 
@@ -3027,10 +3103,7 @@ impl TextInputState {
         self.edit.set_selection(Selection::Normal(end));
     }
 
-    pub fn move_cursor_up(
-        &mut self,
-        mods: &winit::keyboard::ModifiersState,
-    ) {
+    pub fn move_cursor_up(&mut self, mods: &winit::keyboard::ModifiersState) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
@@ -3066,10 +3139,7 @@ impl TextInputState {
         }
     }
 
-    pub fn move_cursor_down(
-        &mut self,
-        mods: &winit::keyboard::ModifiersState,
-    ) {
+    pub fn move_cursor_down(&mut self, mods: &winit::keyboard::ModifiersState) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
@@ -3105,10 +3175,7 @@ impl TextInputState {
         }
     }
 
-    pub fn move_cursor_right(
-        &mut self,
-        mods: &winit::keyboard::ModifiersState,
-    ) {
+    pub fn move_cursor_right(&mut self, mods: &winit::keyboard::ModifiersState) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
@@ -3136,7 +3203,7 @@ impl TextInputState {
             edit.action(sys, Action::Motion(Motion::Right));
         } else {
             if let Some((start, end)) = edit.selection_bounds() {
-                edit.set_cursor(start);
+                edit.set_cursor(end);
                 edit.set_selection(Selection::None)
             } else {
                 edit.action(sys, Action::Motion(Motion::Right))
@@ -3144,10 +3211,7 @@ impl TextInputState {
         }
     }
 
-    pub fn move_cursor_left(
-        &mut self,
-        mods: &winit::keyboard::ModifiersState,
-    ) {
+    pub fn move_cursor_left(&mut self, mods: &winit::keyboard::ModifiersState) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
@@ -3189,16 +3253,21 @@ impl TextInputState {
         if !self.multiline {
             pos.y = 0;
         }
-        self.edit.action(&mut self.fonts.sys(), Action::Click { x: pos.x, y: pos.y })
+        self.edit
+            .action(&mut self.fonts.sys(), Action::Click { x: pos.x, y: pos.y })
     }
 
     pub fn mouse_double_clicked(&mut self, pos: Vec2) {
+        // TODO[BUG]: if the cursor is between two words both words are selected
         use ctext::{Action, Edit};
         let mut pos = pos.as_ivec2();
         if !self.multiline {
             pos.y = 0;
         }
-        self.edit.action(&mut self.fonts.sys(), Action::DoubleClick { x: pos.x, y: pos.y })
+        self.edit.action(
+            &mut self.fonts.sys(),
+            Action::DoubleClick { x: pos.x, y: pos.y },
+        )
     }
 
     pub fn mouse_triple_clicked(&mut self, pos: Vec2) {
@@ -3207,7 +3276,10 @@ impl TextInputState {
         if !self.multiline {
             pos.y = 0;
         }
-        self.edit.action(&mut self.fonts.sys(), Action::TripleClick { x: pos.x, y: pos.y })
+        self.edit.action(
+            &mut self.fonts.sys(),
+            Action::TripleClick { x: pos.x, y: pos.y },
+        )
     }
 
     // TODO[NOTE]: on first / last line we should not do wrapping selection
@@ -3217,7 +3289,8 @@ impl TextInputState {
         if !self.multiline {
             pos.y = 0;
         }
-        self.edit.action(&mut self.fonts.sys(), Action::Drag { x: pos.x, y: pos.y })
+        self.edit
+            .action(&mut self.fonts.sys(), Action::Drag { x: pos.x, y: pos.y })
     }
 }
 
@@ -3227,7 +3300,7 @@ impl TextInputState {
 // BEGIN FLAGS
 //---------------------------------------------------------------------------------------
 
-macros::flags!(ItemFlags: MOVE_CURSOR_NO);
+macros::flags!(ItemFlags: ACTIVATE_ON_RELEASE);
 macros::flags!(PanelFlags:
     NO_TITLEBAR,
     NO_FOCUS,
@@ -3237,6 +3310,11 @@ macros::flags!(PanelFlags:
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
     DONT_KEEP_SCROLLBAR_PAD,
+);
+
+macros::flags!(TextInputFlags:
+    MULTILINE,
+    SELECT_ON_ACTIVE,
 );
 
 macros::flags!(
@@ -4815,11 +4893,7 @@ impl GlyphCache {
         }
     }
 
-    pub fn get_glyph(
-        &mut self,
-        glyph_key: ctext::CacheKey,
-        wgpu: &WGPU,
-    ) -> Option<Glyph> {
+    pub fn get_glyph(&mut self, glyph_key: ctext::CacheKey, wgpu: &WGPU) -> Option<Glyph> {
         if let Some(&meta) = self.cached_glyphs.get(&glyph_key) {
             return Some(Glyph {
                 texture: self.texture.clone(),
@@ -4887,11 +4961,7 @@ impl GlyphCache {
         Some(Rect::from_min_max(uv_min, uv_max))
     }
 
-    pub fn alloc_new_glyph(
-        &mut self,
-        glyph_key: ctext::CacheKey,
-        wgpu: &WGPU,
-    ) -> Option<Glyph> {
+    pub fn alloc_new_glyph(&mut self, glyph_key: ctext::CacheKey, wgpu: &WGPU) -> Option<Glyph> {
         let img = self
             .swash_cache
             .get_image_uncached(&mut self.fonts.sys(), glyph_key)?;

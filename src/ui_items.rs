@@ -5,7 +5,7 @@ use crate::{
     ctext,
     mouse::{CursorIcon, MouseBtn},
     rect::Rect,
-    ui::{self, CornerRadii, Id, TextInputState},
+    ui::{self, CornerRadii, Id, ItemFlags, TextInputFlags, TextInputState},
 };
 
 macro_rules! ui_text {
@@ -17,7 +17,8 @@ pub(crate) use ui_text;
 
 impl ui::Context {
     pub fn image(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
-        let id = self.gen_id(tex_id);
+        // let id = self.gen_id(tex_id);
+        let id = Id::NULL;
         let rect = self.place_item(id, size);
         self.register_item(id);
         self.draw(|list| {
@@ -91,10 +92,10 @@ impl ui::Context {
         } else {
             self.style.btn_default()
         };
-        let mut knob_col = self.style.btn_press();
+        let mut handle_col = self.style.btn_press();
 
         if *b {
-            std::mem::swap(&mut bg_col, &mut knob_col);
+            std::mem::swap(&mut bg_col, &mut handle_col);
         }
 
         self.draw(|list| {
@@ -107,17 +108,17 @@ impl ui::Context {
                 .fill(bg_col)
                 .add();
 
-            let knob_r = height * 0.8 * 0.5;
-            let knob_x = if *b {
+            let handle_r = height * 0.8 * 0.5;
+            let handle_x = if *b {
                 rail_max.x - height * 0.5
             } else {
                 rail_min.x + height * 0.5
             };
-            let knob_center = Vec2::new(knob_x, rail_min.y + height * 0.5);
-            list.circle(knob_center, knob_r)
+            let handle_center = Vec2::new(handle_x, rail_min.y + height * 0.5);
+            list.circle(handle_center, handle_r)
                 // .corners(CornerRadii::all(height * 0.8 * 0.3))
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(knob_col)
+                .fill(handle_col)
                 .add();
         });
 
@@ -178,6 +179,7 @@ impl ui::Context {
         let col = self.style.panel_dark_bg();
 
         self.draw(|list| list.rect(rect.min, rect.max).fill(fill).add());
+        self.move_down(self.style.spacing_v());
     }
 
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
@@ -186,13 +188,13 @@ impl ui::Context {
         let rect = self.place_item(self.gen_id(label), Vec2::new(width, height));
         let sig = self.register_item(self.gen_id(label));
 
-        let knob_size = height * 0.8;
-        let rail_pad = height - knob_size;
-        let usable_width = (rect.width() - knob_size - rail_pad).max(0.0);
+        let handle_size = height * 0.8;
+        let rail_pad = height - handle_size;
+        let usable_width = (rect.width() - handle_size - rail_pad).max(0.0);
 
         if sig.pressed() || sig.dragging() {
             let denom = usable_width.max(1.0);
-            let t = ((self.mouse.pos.x - (rect.min.x + knob_size)) / denom).clamp(0.0, 1.0);
+            let t = ((self.mouse.pos.x - (rect.min.x + handle_size)) / denom).clamp(0.0, 1.0);
             if (max - min).abs() > f32::EPSILON {
                 *val = min + t * (max - min);
             }
@@ -204,9 +206,9 @@ impl ui::Context {
             ((*val - min) / (max - min)).clamp(0.0, 1.0)
         };
 
-        let mut knob_min = rect.min + Vec2::splat(rail_pad / 2.0);
-        knob_min.x += ratio * usable_width;
-        let knob_max = knob_min + Vec2::splat(knob_size);
+        let mut handle_min = rect.min + Vec2::splat(rail_pad / 2.0);
+        handle_min.x += ratio * usable_width;
+        let handle_max = handle_min + Vec2::splat(handle_size);
 
         if sig.hovering() {
             self.set_cursor_icon(CursorIcon::MoveH);
@@ -215,7 +217,7 @@ impl ui::Context {
             self.expect_drag = true;
         }
 
-        let (mut rail_col, mut knob_col) = if sig.dragging() || sig.pressed() {
+        let (mut rail_col, mut handle_col) = if sig.dragging() || sig.pressed() {
             (self.style.btn_press(), self.style.btn_hover())
         } else if sig.hovering() {
             (self.style.btn_hover(), self.style.btn_press())
@@ -229,9 +231,9 @@ impl ui::Context {
                 .fill(rail_col)
                 .add();
 
-            list.rect(knob_min, knob_max)
+            list.rect(handle_min, handle_max)
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(knob_col)
+                .fill(handle_col)
                 .add()
         });
 
@@ -319,10 +321,10 @@ impl ui::Context {
     }
 
     pub fn text_input(&mut self, text: &str) {
-        self.text_input_ex(text, false);
+        self.text_input_ex(text, TextInputFlags::NONE);
     }
 
-    pub fn text_input_ex(&mut self, text: &str, multiline: bool) {
+    pub fn text_input_ex(&mut self, text: &str, flags: TextInputFlags) {
         use ctext::{Action, Edit, Motion};
 
         let text_height = self.style.text_size();
@@ -342,18 +344,11 @@ impl ui::Context {
         }
 
         let input = &mut self.text_input_states[id];
-        input.multiline = multiline;
+        input.multiline = flags.has(TextInputFlags::MULTILINE);
 
-        let cursor_pos = input.edit.cursor_position();
+        input.edit.shape_as_needed(&mut self.font_table.sys(), true);
 
-        input
-            .edit
-            .shape_as_needed(&mut self.font_table.sys(), true);
-
-        let layout = input.layout_text(
-            self.glyph_cache.get_mut(),
-            &mut self.draw.wgpu,
-        );
+        let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.draw.wgpu);
         let text_dim = layout.size();
 
         let total_h = (text_dim.y).max(self.style.line_height());
@@ -362,16 +357,27 @@ impl ui::Context {
         let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
 
         let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
+        // let sig = self.register_item_ex(id, ui::ItemFlags::ACTIVATE_ON_RELEASE);
+
+        let itm_flag = if flags.has(TextInputFlags::SELECT_ON_ACTIVE) {
+            // TODO[NOTE]: we need this because without it SELECT_ON_ACTIVE does not work
+            // on press the text is selected but most certainly the mouse is still pressed on the next
+            // frame immediately deselecting it. currently the item needs to be selected when the mouse
+            // is no longer pressed
+            ItemFlags::ACTIVATE_ON_RELEASE
+        } else {
+            ItemFlags::NONE
+        };
+
+        let sig = self.register_item_ex(id, itm_flag);
+
 
         if sig.hovering() || sig.dragging() {
             self.set_cursor_icon(CursorIcon::Text);
         }
 
         let relative_pos = self.mouse.pos - rect.min;
-        // if sig.double_clicked() || sig.double_pressed() || sig.released() || sig.dragging() {
-        //     println!("{sig}");
-        // }
+
         if sig.double_pressed() {
             // TODO[BUG]: only works when double pressing and dragging afterwards, if holding the
             // double press we loose word selection mode
@@ -386,207 +392,34 @@ impl ui::Context {
             self.text_input_states[id].deselect_all();
         }
 
+        if self.active_id_changed
+            && self.active_id == id
+            && flags.has(TextInputFlags::SELECT_ON_ACTIVE)
+        {
+            self.text_input_states[id].select_all();
+        }
+
         let text_pos =
             rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
         self.draw_text_input(id, text_pos, rect);
     }
 
     pub fn draw_text_input(&mut self, id: Id, pos: Vec2, rect: Rect) {
-    use ctext::Edit;
-    use std::cmp;
-    use unicode_segmentation::UnicodeSegmentation;
-
-    let bg = self.style.panel_dark_bg();
-    let text_color = self.style.text_col();
-    let cursor_color = self.style.btn_press();
-    let selection_color = self.style.btn_hover();
-    let selected_text_color = self.style.text_col();
-
-    let input = &mut self.text_input_states[id];
-
-    let mut glyphs = Vec::new();
-    let mut selection_rects = Vec::new();
-    let mut cursor_rects = Vec::new();
-    // let mut cursor_rects: Vec<(i32, i32, u32, u32)> = Vec::new();
-
-    let sel_bounds = input.edit.selection_bounds();
-    let cursor = input.edit.cursor();
-    input.edit.with_buffer_mut(|buffer| {
-        for run in buffer.layout_runs() {
-            let line_i = run.line_i;
-            let line_y = run.line_y;
-            let line_top = run.line_top;
-            let line_height = run.line_height;
-
-            // Selection highlighting (collect rects)
-            // Selection highlighting (collect rects)
-            if let Some((start, end)) = sel_bounds {
-                if line_i >= start.line && line_i <= end.line {
-                    // use floats for accurate accumulation to avoid zero-width from truncation
-                    let mut range_opt: Option<(f32, f32)> = None;
-
-                    for glyph in run.glyphs.iter() {
-                        let cluster = &run.text[glyph.start..glyph.end];
-                        let total = cluster.grapheme_indices(true).count();
-                        let mut c_x = glyph.x;
-                        let c_w = glyph.w / total as f32;
-
-                        for (i, _g) in cluster.grapheme_indices(true) {
-                            let c_start = glyph.start + i;
-                            let c_end = glyph.start + i + _g.len();
-                            if (start.line != line_i || c_end > start.index)
-                                && (end.line != line_i || c_start < end.index)
-                            {
-                                range_opt = match range_opt.take() {
-                                    Some((min_f, max_f)) => Some((
-                                            min_f.min(c_x),
-                                            max_f.max(c_x + c_w),
-                                    )),
-                                    None => Some((c_x, c_x + c_w)),
-                                };
-                            } else if let Some((min_f, max_f)) = range_opt.take() {
-                                let min = min_f.floor();
-                                let pos = Vec2::new(min, line_top);
-                                let max = max_f.ceil();
-                                let size = Vec2::new((max - min).max(0.0), line_height);
-                                selection_rects.push(Rect::from_min_size(pos, size));
-                            }
-                            c_x += c_w;
-                        }
-                    }
-
-                    // IMPORTANT: Push any remaining accumulated range after processing all glyphs
-                    // This handles the case where the selection continues to the end of the line
-                    if let Some((min_f, max_f)) = range_opt.take() {
-                        let min = min_f.floor();
-                        let pos = Vec2::new(min, line_top);
-                        let max = max_f.ceil();
-                        let size = Vec2::new((max - min).max(0.0), line_height);
-                        selection_rects.push(Rect::from_min_size(pos, size));
-                    }
-
-                    if run.glyphs.is_empty() && end.line > line_i {
-                        range_opt = Some((0.0, buffer.size().0.unwrap_or(0.0)));
-                    }
-
-                    if let Some((mut min_f, mut max_f)) = range_opt.take() {
-                        if end.line > line_i {
-                            if run.rtl {
-                                min_f = 0.0;
-                            } else {
-                                max_f = buffer.size().0.unwrap_or(0.0);
-                            }
-                        }
-                        let min = min_f.floor();
-                        let pos = Vec2::new(min, line_top);
-                        let max = max_f.ceil();
-                        let size = Vec2::new((max - min).max(0.0), line_height);
-                        selection_rects.push(Rect::from_min_size(pos, size));
-                    }
-                }
-            }
-
-            // Cursor
-            if let Some((x, y)) = cursor_position(&cursor, &run) {
-                let pos = Vec2::new(x as f32, y as f32);
-                let size = Vec2::new(2.0, line_height);
-                cursor_rects.push(Rect::from_min_size(pos, size))
-                // cursor_rects.push((x, y, 1, line_height as u32));
-            }
-
-            // Glyphs (collect textured quads + color)
-            for glyph in run.glyphs.iter() {
-                let physical_glyph = glyph.physical((0., 0.), 1.0);
-                let mut glyph_color = text_color;
-
-                if text_color != selected_text_color {
-                    if let Some((start, end)) = sel_bounds {
-                        if line_i >= start.line
-                            && line_i <= end.line
-                            && (start.line != line_i || glyph.end > start.index)
-                            && (end.line != line_i || glyph.start < end.index)
-                        {
-                            glyph_color = selected_text_color;
-                        }
-                    }
-                }
-
-                let mut key = physical_glyph.cache_key;
-                key.x_bin = ctext::SubpixelBin::Three;
-                key.y_bin = ctext::SubpixelBin::Three;
-
-                let mut cache = self.glyph_cache.borrow_mut();
-                let wgpu = &self.draw.wgpu;
-                if let Some(mut cached) = cache.get_glyph(key, wgpu) {
-                    let pos = cached.meta.pos
-                        + Vec2::new(
-                            physical_glyph.x as f32,
-                            physical_glyph.y as f32 + run.line_y,
-                        );
-                    let size = cached.meta.size;
-                    let uv_min = cached.meta.uv_min;
-                    let uv_max = cached.meta.uv_max;
-
-                    glyphs.push((ui::GlyphMeta { pos, size, uv_min, uv_max }, glyph_color));
-                }
-            }
-        }
-    });
-
-    // Draw: selection -> cursor -> glyphs (matches reference ordering)
-    self.draw(|list| {
-        list.rect(rect.min, rect.max)
-            .corners(CornerRadii::all(self.style.btn_corner_radius()))
-            .fill(bg)
-            .add();
-
-        for r in &selection_rects {
-            list.rect(
-                r.min + pos,
-                r.max + pos,
-            )
-            .fill(selection_color)
-            .add();
-        }
-
-        if self.active_id == id && selection_rects.is_empty() {
-            for r in cursor_rects {
-                list.rect(
-                    r.min + pos,
-                    r.max + pos,
-                )
-                    .fill(cursor_color)
-                    .add();
-                }
-        }
-
-        for (g, color) in glyphs {
-            let min = g.pos;
-            let max = min + g.size;
-            list.rect(min + pos, max + pos)
-                .texture_uv(g.uv_min, g.uv_max, 1)
-                .fill(color)
-                .add();
-        }
-    });
-}
-
-
-    pub fn draw_text_input2(&mut self, id: Id, pos: Vec2) {
         use ctext::Edit;
-        use std::cmp;
         use unicode_segmentation::UnicodeSegmentation;
 
+        let bg = self.style.panel_dark_bg();
         let text_color = self.style.text_col();
         let cursor_color = self.style.btn_press();
-        let selection_color = self.style.btn_press();
-        let selected_text_color = self.style.btn_press_text();
+        let selection_color = self.style.btn_hover();
+        let selected_text_color = self.style.text_col();
 
         let input = &mut self.text_input_states[id];
 
-        let mut textured_glyphs: Vec<(Vec2, Vec2, Vec2, Vec2, RGBA)> = Vec::new();
-        let mut selection_rects: Vec<(i32, i32, u32, u32)> = Vec::new();
-        let mut cursor_rects: Vec<(i32, i32, u32, u32)> = Vec::new();
+        let mut glyphs = Vec::new();
+        let mut selection_rects = Vec::new();
+        let mut cursor_rects = Vec::new();
+        // let mut cursor_rects: Vec<(i32, i32, u32, u32)> = Vec::new();
 
         let sel_bounds = input.edit.selection_bounds();
         let cursor = input.edit.cursor();
@@ -598,9 +431,11 @@ impl ui::Context {
                 let line_height = run.line_height;
 
                 // Selection highlighting (collect rects)
+                // Selection highlighting (collect rects)
                 if let Some((start, end)) = sel_bounds {
                     if line_i >= start.line && line_i <= end.line {
-                        let mut range_opt: Option<(i32, i32)> = None;
+                        // use floats for accurate accumulation to avoid zero-width from truncation
+                        let mut range_opt: Option<(f32, f32)> = None;
 
                         for glyph in run.glyphs.iter() {
                             let cluster = &run.text[glyph.start..glyph.end];
@@ -615,58 +450,64 @@ impl ui::Context {
                                     && (end.line != line_i || c_start < end.index)
                                 {
                                     range_opt = match range_opt.take() {
-                                        Some((min, max)) => Some((
-                                            cmp::min(min, c_x as i32),
-                                            cmp::max(max, (c_x + c_w) as i32),
-                                        )),
-                                        None => Some((c_x as i32, (c_x + c_w) as i32)),
+                                        Some((min_f, max_f)) => {
+                                            Some((min_f.min(c_x), max_f.max(c_x + c_w)))
+                                        }
+                                        None => Some((c_x, c_x + c_w)),
                                     };
-                                } else if let Some((min, max)) = range_opt.take() {
-                                    selection_rects.push((
-                                        min,
-                                        line_top as i32,
-                                        cmp::max(0, max - min) as u32,
-                                        line_height as u32,
-                                    ));
+                                } else if let Some((min_f, max_f)) = range_opt.take() {
+                                    let min = min_f.floor();
+                                    let pos = Vec2::new(min, line_top);
+                                    let max = max_f.ceil();
+                                    let size = Vec2::new((max - min).max(0.0), line_height);
+                                    selection_rects.push(Rect::from_min_size(pos, size));
                                 }
                                 c_x += c_w;
                             }
                         }
 
-                        if run.glyphs.is_empty() && end.line > line_i {
-                            range_opt = Some((0, buffer.size().0.unwrap_or(0.0) as i32));
+                        // IMPORTANT: Push any remaining accumulated range after processing all glyphs
+                        // This handles the case where the selection continues to the end of the line
+                        if let Some((min_f, max_f)) = range_opt.take() {
+                            let min = min_f.floor();
+                            let pos = Vec2::new(min, line_top);
+                            let max = max_f.ceil();
+                            let size = Vec2::new((max - min).max(0.0), line_height);
+                            selection_rects.push(Rect::from_min_size(pos, size));
                         }
 
-                        if let Some((mut min, mut max)) = range_opt.take() {
+                        if run.glyphs.is_empty() && end.line > line_i {
+                            range_opt = Some((0.0, buffer.size().0.unwrap_or(0.0)));
+                        }
+
+                        if let Some((mut min_f, mut max_f)) = range_opt.take() {
                             if end.line > line_i {
                                 if run.rtl {
-                                    min = 0;
+                                    min_f = 0.0;
                                 } else {
-                                    max = buffer.size().0.unwrap_or(0.0) as i32;
+                                    max_f = buffer.size().0.unwrap_or(0.0);
                                 }
                             }
-                            selection_rects.push((
-                                min,
-                                line_top as i32,
-                                cmp::max(0, max - min) as u32,
-                                line_height as u32,
-                            ));
+                            let min = min_f.floor();
+                            let pos = Vec2::new(min, line_top);
+                            let max = max_f.ceil();
+                            let size = Vec2::new((max - min).max(0.0), line_height);
+                            selection_rects.push(Rect::from_min_size(pos, size));
                         }
                     }
                 }
 
                 // Cursor
                 if let Some((x, y)) = cursor_position(&cursor, &run) {
-                    cursor_rects.push((x, y, 1, line_height as u32));
+                    let pos = Vec2::new(x as f32, y as f32);
+                    let size = Vec2::new(2.0, line_height);
+                    cursor_rects.push(Rect::from_min_size(pos, size))
+                    // cursor_rects.push((x, y, 1, line_height as u32));
                 }
 
                 // Glyphs (collect textured quads + color)
                 for glyph in run.glyphs.iter() {
                     let physical_glyph = glyph.physical((0., 0.), 1.0);
-                    // let mut glyph_color = match glyph.color_opt {
-                    //     Some(c) => c,
-                    //     None => text_color,
-                    // };
                     let mut glyph_color = text_color;
 
                     if text_color != selected_text_color {
@@ -688,44 +529,53 @@ impl ui::Context {
                     let mut cache = self.glyph_cache.borrow_mut();
                     let wgpu = &self.draw.wgpu;
                     if let Some(mut cached) = cache.get_glyph(key, wgpu) {
-                        let min = cached.meta.pos
+                        let pos = cached.meta.pos
                             + Vec2::new(
                                 physical_glyph.x as f32,
                                 physical_glyph.y as f32 + run.line_y,
                             );
-                        let max = min + cached.meta.size;
+                        let size = cached.meta.size;
                         let uv_min = cached.meta.uv_min;
                         let uv_max = cached.meta.uv_max;
 
-                        textured_glyphs.push((min, max, uv_min, uv_max, glyph_color));
+                        glyphs.push((
+                            ui::GlyphMeta {
+                                pos,
+                                size,
+                                uv_min,
+                                uv_max,
+                            },
+                            glyph_color,
+                        ));
                     }
                 }
             }
         });
 
-        // Draw: selection -> cursor -> glyphs (matches reference ordering)
+        // Draw: selection -> cursor -> glyphs
         self.draw(|list| {
-            for (x, y, w, h) in selection_rects {
-                list.rect(
-                    Vec2::new(x as f32, y as f32) + pos,
-                    Vec2::new((x + w as i32) as f32, (y + h as i32) as f32) + pos,
-                )
-                .fill(selection_color)
+            list.rect(rect.min, rect.max)
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .fill(bg)
                 .add();
+
+            for r in &selection_rects {
+                list.rect(r.min + pos, r.max + pos)
+                    .fill(selection_color)
+                    .add();
             }
 
-            for (x, y, w, h) in cursor_rects {
-                list.rect(
-                    Vec2::new(x as f32, y as f32) + pos,
-                    Vec2::new((x + w as i32) as f32, (y + h as i32) as f32) + pos,
-                )
-                .fill(cursor_color)
-                .add();
+            if self.active_id == id && selection_rects.is_empty() {
+                for r in cursor_rects {
+                    list.rect(r.min + pos, r.max + pos).fill(cursor_color).add();
+                }
             }
 
-            for (min, max, uv_min, uv_max, color) in textured_glyphs {
+            for (g, color) in glyphs {
+                let min = g.pos;
+                let max = min + g.size;
                 list.rect(min + pos, max + pos)
-                    .texture_uv(uv_min, uv_max, 1)
+                    .texture_uv(g.uv_min, g.uv_max, 1)
                     .fill(color)
                     .add();
             }

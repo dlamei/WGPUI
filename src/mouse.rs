@@ -85,7 +85,7 @@ impl MouseState {
     pub fn double_clicked(&self, btn: MouseBtn) -> bool {
         self.buttons[btn].double_clicked()
     }
-    
+
     pub fn triple_clicked(&self, btn: MouseBtn) -> bool {
         self.buttons[btn].triple_clicked()
     }
@@ -327,7 +327,6 @@ impl ButtonState {
     }
 }
 
-
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CursorIcon {
     #[default]
@@ -396,9 +395,7 @@ pub struct Clipboard {
 impl Clipboard {
     pub fn new() -> Self {
         let repr = clipboard::ClipboardProvider::new().unwrap();
-        Self { 
-            repr,
-        }
+        Self { repr }
     }
 
     pub fn get_text(&mut self) -> Option<String> {
