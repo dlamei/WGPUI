@@ -21,11 +21,16 @@ impl ui::Context {
         let id = Id::NULL;
         let rect = self.place_item(id, size);
         self.register_item(id);
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .texture_uv(uv_min, uv_max, tex_id)
-                .add()
-        })
+        self.draw(
+            rect.draw_rect()
+            .uv(uv_min, uv_max)
+            .texture(tex_id)
+            );
+        // self.draw(|list| {
+        //     list.rect(rect.min, rect.max)
+        //         .texture_uv(uv_min, uv_max, tex_id)
+        //         .add()
+        // })
     }
 
     pub fn button(&mut self, label: &str) -> bool {
@@ -61,13 +66,20 @@ impl ui::Context {
         let text_pos =
             rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
 
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(btn_col)
-                .add();
-            list.add_text(text_pos, &text_shape, text_col);
-        });
+        self.draw(
+            rect.draw_rect()
+            .corners(CornerRadii::all(self.style.btn_corner_radius()))
+            .fill(btn_col)
+            )
+            .draw(text_shape.draw_rects(text_pos, text_col))
+            ;
+        // self.draw(|list| {
+        //     list.rect(rect.min, rect.max)
+        //         .corners(CornerRadii::all(self.style.btn_corner_radius()))
+        //         .fill(btn_col)
+        //         .add();
+        //     list.add_text(text_pos, &text_shape, text_col);
+        // });
 
         sig.released() && !start_drag_outside
     }
@@ -98,15 +110,15 @@ impl ui::Context {
             std::mem::swap(&mut bg_col, &mut handle_col);
         }
 
-        self.draw(|list| {
+        // self.draw(|list| 
+        {
             let rail_min = rect.min;
             let rail_max = rail_min + Vec2::new(width, height);
-            list.rect(rect.min, rect.max)
+            self.draw(rect.draw_rect()
                 // .corners(CornerRadii::all(height * 0.5))
                 // .corners(CornerRadii::all(height * 0.3))
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(bg_col)
-                .add();
+                .fill(bg_col));
 
             let handle_r = height * 0.8 * 0.5;
             let handle_x = if *b {
@@ -115,12 +127,17 @@ impl ui::Context {
                 rail_min.x + height * 0.5
             };
             let handle_center = Vec2::new(handle_x, rail_min.y + height * 0.5);
-            list.circle(handle_center, handle_r)
+
+            self.draw(
+                Rect::from_center_size(handle_center, Vec2::splat(handle_r) * 2.0)
+                .draw_rect()
+                // .circle(handle_center, handle_r)
                 // .corners(CornerRadii::all(height * 0.8 * 0.3))
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(handle_col)
-                .add();
-        });
+                .fill(handle_col));
+                // .add();
+        }
+        // );
 
         self.same_line();
         self.text(label);
@@ -153,19 +170,19 @@ impl ui::Context {
         };
 
         let radii = CornerRadii::all(self.style.btn_corner_radius());
-        self.draw(|list| {
-            let inset = box_size * 0.15;
-            let inner_min = rect.min + Vec2::splat(inset);
-            let inner_max = rect.max - Vec2::splat(inset);
+        // self.draw(|list| {
+        let inset = box_size * 0.15;
+        let inner_min = rect.min + Vec2::splat(inset);
+        let inner_max = rect.max - Vec2::splat(inset);
 
-            list.rect(rect.min, rect.max).fill(col).corners(radii).add();
-            if *b {
-                list.rect(inner_min, inner_max)
-                    .corners(radii)
-                    .fill(active)
-                    .add();
-            }
-        });
+        self.draw(rect.draw_rect().fill(col).corners(radii));
+        if *b {
+            self.draw(Rect::from_min_max(inner_min, inner_max)
+                .draw_rect()
+                .corners(radii)
+                .fill(active));
+        }
+        // });
 
         self.same_line();
         self.text(label);
@@ -178,8 +195,8 @@ impl ui::Context {
         let rect = self.place_item(Id::NULL, Vec2::new(width, thickness));
         let col = self.style.panel_dark_bg();
 
-        self.draw(|list| list.rect(rect.min, rect.max).fill(fill).add());
-        self.move_down(self.style.spacing_v());
+        // self.draw(|list| list.rect(rect.min, rect.max).fill(fill).add());
+        self.draw(rect.draw_rect().fill(fill));
     }
 
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
@@ -225,17 +242,22 @@ impl ui::Context {
             (self.style.btn_default(), self.style.btn_press())
         };
 
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
+        // self.draw(|list| {
+            self.draw(rect.draw_rect()
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(rail_col)
-                .add();
+                .fill(rail_col))
+                .draw(Rect::from_min_max(handle_min, handle_max)
+                    .draw_rect()
+                    .corners(self.style.btn_corner_radius())
+                    .fill(handle_col)
+                    );
+    
 
-            list.rect(handle_min, handle_max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(handle_col)
-                .add()
-        });
+            // list.rect(handle_min, handle_max)
+            //     .corners(CornerRadii::all(self.style.btn_corner_radius()))
+            //     .fill(handle_col)
+            //     .add()
+        // });
 
         self.same_line();
         self.text(label);
@@ -288,15 +310,12 @@ impl ui::Context {
 
         let text_pos = icon_pos + Vec2::new(self.style.text_size() * 2.0, 0.0);
 
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(btn_col)
-                .add();
+        self.draw(rect.draw_rect()
+            .corners(CornerRadii::all(self.style.btn_corner_radius()))
+            .fill(btn_col))
+            .draw(icon_shape.draw_rects(icon_pos, text_col))
+            .draw(text_shape.draw_rects(text_pos, text_col));
 
-            list.add_text(icon_pos, &icon_shape, text_col);
-            list.add_text(text_pos, &text_shape, text_col);
-        });
 
         *open
     }
@@ -317,7 +336,8 @@ impl ui::Context {
         // self.register_item(id);
         self.move_down(pad);
 
-        self.draw(|list| list.add_text(rect.min, &layout, self.style.text_col()));
+        self.draw(layout.draw_rects(rect.min, self.style.text_col()));
+        // self.draw(|list| list.add_text(rect.min, &layout, self.style.text_col()));
     }
 
     pub fn text_input(&mut self, text: &str) {
@@ -553,33 +573,48 @@ impl ui::Context {
         });
 
         // Draw: selection -> cursor -> glyphs
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(self.style.btn_corner_radius()))
-                .fill(bg)
-                .add();
+        // self.draw(|list| {
+            
+            // list.rect(rect.min, rect.max)
+            //     .corners(CornerRadii::all(self.style.btn_corner_radius()))
+            //     .fill(bg)
+            //     .add();
+            self.draw(rect.draw_rect().fill(bg).corners(self.style.btn_corner_radius()))
+                .draw(selection_rects.iter().map(|r| r.draw_rect().offset(pos).fill(selection_color)));
 
-            for r in &selection_rects {
-                list.rect(r.min + pos, r.max + pos)
-                    .fill(selection_color)
-                    .add();
-            }
+            // for r in &selection_rects {
+            //     list.rect(r.min + pos, r.max + pos)
+            //         .fill(selection_color)
+            //         .add();
+            // }
 
             if self.active_id == id && selection_rects.is_empty() {
-                for r in cursor_rects {
-                    list.rect(r.min + pos, r.max + pos).fill(cursor_color).add();
-                }
+                self.draw(cursor_rects.iter().map(|r| r.draw_rect().offset(pos).fill(cursor_color)));
+                // for r in cursor_rects {
+                //     list.rect(r.min + pos, r.max + pos).fill(cursor_color).add();
+                // }
             }
 
-            for (g, color) in glyphs {
+            self.draw(glyphs.iter().map(|(g, color)| {
                 let min = g.pos;
                 let max = min + g.size;
-                list.rect(min + pos, max + pos)
-                    .texture_uv(g.uv_min, g.uv_max, 1)
-                    .fill(color)
-                    .add();
-            }
-        });
+                Rect::from_min_size(g.pos, g.size)
+                    .draw_rect()
+                    .offset(pos)
+                    .fill(*color)
+                    .texture(1)
+                    .uv(g.uv_min, g.uv_max)
+            }));
+
+            // for (g, color) in glyphs {
+            //     let min = g.pos;
+            //     let max = min + g.size;
+            //     list.rect(min + pos, max + pos)
+            //         .texture_uv(g.uv_min, g.uv_max, 1)
+            //         .fill(color)
+            //         .add();
+            // }
+        // });
     }
 
     pub fn begin_tabbar(&mut self, label: &str) {
@@ -698,23 +733,21 @@ impl ui::Context {
             );
 
         if tb.is_dragging && tb.selected_tab_id == id {
-            self.draw_over(|list| {
-                list.rect(item_pos, item_pos + rect.size())
+            self.draw_over(
+                Rect::from_min_size(item_pos, rect.size())
+                    .draw_rect()
                     .fill(btn_col)
-                    .corners(CornerRadii::top(self.style.btn_corner_radius()))
-                    .add();
+                    .corners(CornerRadii::top(self.style.btn_corner_radius())))
+                .draw_over(text_shape.draw_rects(text_pos, text_col));
 
-                list.add_text(text_pos, &text_shape, text_col);
-            });
         } else {
-            self.draw(|list| {
-                list.rect(item_pos, item_pos + rect.size())
+            self.draw(
+                Rect::from_min_size(item_pos, rect.size())
+                    .draw_rect()
                     .fill(btn_col)
-                    .corners(CornerRadii::top(self.style.btn_corner_radius() * 1.5))
-                    .add();
+                    .corners(CornerRadii::top(self.style.btn_corner_radius())))
+                .draw(text_shape.draw_rects(text_pos, text_col));
 
-                list.add_text(text_pos, &text_shape, text_col);
-            });
         }
 
         is_selected

@@ -401,20 +401,44 @@ impl Context {
         }
     }
 
-    pub fn draw_over(&self, f: impl FnOnce(&mut DrawList)) {
-        let p = self.get_current_panel();
-        let draw_list = &mut p.draw_list_over.borrow_mut();
-        f(draw_list)
+    pub fn current_drawlist(&self) -> &DrawList {
+        &self.get_current_panel().draw_list
     }
 
-    pub fn draw(&self, f: impl FnOnce(&mut DrawList)) {
-        let p = self.get_current_panel();
-        let draw_list = &mut p.draw_list.borrow_mut();
-        f(draw_list)
+    pub fn current_drawlist_over(&self) -> &DrawList {
+        &self.get_current_panel().draw_list_over
     }
 
-    pub fn gen_id(&self, label: impl hash::Hash) -> Id {
-        self.get_current_panel().gen_id(label)
+    pub fn draw(&self, itm: impl DrawableRects) -> &Self {
+        let list = &self.get_current_panel().draw_list;
+        itm.add_to_drawlist(list);
+        self
+    }
+
+    pub fn draw_over(&self, itm: impl DrawableRects) -> &Self {
+        let list = &self.get_current_panel().draw_list_over;
+        itm.add_to_drawlist(list);
+        self
+    }
+
+    // pub fn draw_over(&self, f: impl FnOnce(&mut DrawList)) {
+    //     let p = self.get_current_panel();
+    //     let draw_list = &p.draw_list_over;
+    //     f(draw_list)
+    // }
+
+    // pub fn draw(&self, f: impl FnOnce(&mut DrawList)) {
+    //     let p = self.get_current_panel();
+    //     let draw_list = &mut p.draw_list.borrow_mut();
+    //     f(draw_list)
+    // }
+
+    pub fn gen_id(&self, label: &str) -> Id {
+        if self.current_panel_id.is_null() {
+            Id::from_str(label)
+        } else {
+            self.get_current_panel().gen_id(label)
+        }
     }
 
     pub fn begin(&mut self, name: impl Into<String>) {
@@ -443,17 +467,27 @@ impl Context {
 
         let mut newly_created = false;
         let name: String = name.into();
-        let mut id = self.get_panel_id_with_name(&name);
-        if id.is_null() {
-            id = self.create_panel(name);
+        let id = self.gen_id(&name);
+
+        if !self.panels.contains_id(id) {
+            self.create_panel(name);
+            self.panels[id].id = id;
             newly_created = true;
         }
 
-        self.current_panel_stack.push(id);
-        self.current_panel_id = id;
-
-        let p = &mut self.panels[id];
         if newly_created {
+
+            if flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
+                let parent_id = self.current_panel_id;
+                let parent = &self.panels[parent_id];
+                let draw_list = parent.draw_list.clone();
+                let draw_list_over = parent.draw_list_over.clone();
+                let p = &mut self.panels[id];
+                p.draw_list = draw_list;
+                p.draw_list_over = draw_list_over;
+            } 
+
+            let p = &mut self.panels[id];
             p.draw_order = self.draw_order.len();
             self.draw_order.push(id);
 
@@ -461,6 +495,13 @@ impl Context {
                 p.pos = next_window_pos(self.draw.screen_size, self.next.size);
             }
         }
+
+
+        self.current_panel_stack.push(id);
+        self.current_panel_id = id;
+
+        let p = &mut self.panels[id];
+
         if self.next.pos.x.is_finite() {
             p.pos.x = self.next.pos.x;
         }
@@ -468,14 +509,20 @@ impl Context {
             p.pos.y = self.next.pos.y;
         }
 
-        p.clear_temp_data();
+        if !flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
+            p.draw_list.clear();
+            p.draw_list_over.clear();
+            p.root = Id::NULL;
+        }
 
         assert!(p.id == id);
         p.root = p.id;
+        // TODO[CHECK]:
+        p.parent_id = p.id;
         p.push_id(p.id);
         p.flags = flags;
         p.explicit_size = self.next.size;
-        p.draw_list.borrow_mut().circle_max_err = self.circle_max_err;
+        p.draw_list.data.borrow_mut().circle_max_err = self.circle_max_err;
         p.titlebar_height = if id == self.window_panel_id {
             self.style.window_titlebar_height()
         } else {
@@ -487,7 +534,7 @@ impl Context {
         p.scrollbar_padding = self.style.scrollbar_padding();
         p.last_frame_used = self.frame_count;
         p.move_id = p.gen_id("##_MOVE");
-        p.draw_list.borrow_mut().clip_content = self.clip_content;
+        p.draw_list.data.borrow_mut().clip_content = self.clip_content;
 
         // p.scroll = p.next_scroll;
         p.scroll = p.next_scroll.min(p.scroll_max()).max(p.scroll_min());
@@ -592,47 +639,69 @@ impl Context {
             self.style.panel_bg()
         };
 
-        self.draw(|list| {
-            // panel clip rectangle
-            // let rect = p.panel_rect();
-            let mut clip = p.panel_rect_with_outline();
-            clip.min = clip.min.floor();
-            clip.max = clip.max.ceil();
-            list.push_clip_rect(p.panel_rect_with_outline());
+        // self.draw(|list| {
+        // panel clip rectangle
+        // let rect = p.panel_rect();
+        let mut clip = p.panel_rect_with_outline();
+        clip.min = clip.min.floor();
+        clip.max = clip.max.ceil();
+        self.current_drawlist()
+            .push_clip_rect(clip);
 
-            list.rect(panel_pos, panel_pos + panel_size)
+        self.draw(
+            Rect::from_min_size(panel_pos, panel_size)
+                .draw_rect()
                 .fill(bg_fill)
                 .outline(outline)
-                .corners(CornerRadii::all(self.style.panel_corner_radius()))
-                .add();
-        });
+                .corners(self.style.panel_corner_radius())
+        );
+        // list.rect(panel_pos, panel_pos + panel_size)
+        //     .fill(bg_fill)
+        //     .outline(outline)
+        //     .corners(CornerRadii::all(self.style.panel_corner_radius()))
+        //     .add();
+        // });
 
-        self.draw_over(|list| {
-            let clip = p.panel_rect_with_outline();
+        if self.draw_clip_rect {
+            self.draw_over(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
+        }
 
-            if self.draw_clip_rect {
-                list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
-            }
+        if self.draw_content_outline {
+            self.draw_over(
+                p.visible_content_rect()
+                    .draw_rect()
+                    .outline(Outline::new(RGBA::GREEN, 2.0)),
+            );
+        }
 
-            let content_rect = p.visible_content_rect();
-            if self.draw_content_outline {
-                list.rect(content_rect.min, content_rect.max)
-                    .outline(Outline::new(RGBA::GREEN, 2.0))
-                    .add();
-            }
+        if self.draw_full_content_outline {
+            self.draw_over(
+                p.full_content_rect()
+                    .draw_rect()
+                    .outline(Outline::new(RGBA::BLUE, 2.0)),
+            );
+        }
+        // self.draw_over(|list| {
+        //     let clip = p.panel_rect_with_outline();
 
-            let full_content_rect = p.full_content_rect();
-            if self.draw_full_content_outline {
-                list.rect(full_content_rect.min, full_content_rect.max)
-                    .outline(Outline::new(RGBA::BLUE, 2.0))
-                    .add();
-            }
-        });
+        //     if self.draw_clip_rect {
+        //         list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
+        //     }
 
-        // let win_rect = self.window.window_rect();
-        // if !win_rect.contains_rect(panel_rect) {
-        //     self.requested_windows.push((p.size, self.window.window_pos() + p.pos));
-        // }
+        //     let content_rect = p.visible_content_rect();
+        //     if self.draw_content_outline {
+        //         list.rect(content_rect.min, content_rect.max)
+        //             .outline(Outline::new(RGBA::GREEN, 2.0))
+        //             .add();
+        //     }
+
+        //     let full_content_rect = p.full_content_rect();
+        //     if self.draw_full_content_outline {
+        //         list.rect(full_content_rect.min, full_content_rect.max)
+        //             .outline(Outline::new(RGBA::BLUE, 2.0))
+        //             .add();
+        //     }
+        // });
 
         // let p = &self.panels[id];
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
@@ -655,11 +724,17 @@ impl Context {
                 }
 
                 let pad = 5.0;
-                self.draw(|list| {
-                    list.rect(Vec2::splat(pad), Vec2::splat(titlebar_height - pad))
-                        .texture_uv(self.icon_uv.min, self.icon_uv.max, 1)
-                        .add()
-                });
+                self.draw(
+                    Rect::from_min_max(Vec2::splat(pad), Vec2::splat(titlebar_height - pad))
+                        .draw_rect()
+                        .uv(self.icon_uv.min, self.icon_uv.max)
+                        .texture(1),
+                );
+                // self.draw(|list| {
+                //     list.rect(Vec2::splat(pad), Vec2::splat(titlebar_height - pad))
+                //         .texture_uv(self.icon_uv.min, self.icon_uv.max, 1)
+                //         .add()
+                // });
             }
 
             // start drawing content
@@ -678,14 +753,22 @@ impl Context {
         }
 
         let p = &self.panels[id];
-        self.draw(|list| {
-            // content clip rectangle
-            let clip = p.visible_content_rect();
-            list.push_clip_rect(clip);
-            if self.draw_clip_rect {
-                list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
-            }
-        });
+
+        self.current_drawlist()
+            .push_clip_rect(p.visible_content_rect());
+        if self.draw_clip_rect {
+            self.draw(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
+        }
+        // self.draw(|list| {
+        //     // content clip rectangle
+        //     let clip = p.visible_content_rect();
+        //     list.push_clip_rect(clip);
+        //     if self.draw_clip_rect {
+        //         list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
+        //     }
+        // });
+
+        // println!("{}: {:#?}", p.name, p.draw_list.data.borrow().clip_stack);
     }
 
     fn draw_scrollbar(&mut self, axis: usize) {
@@ -716,7 +799,7 @@ impl Context {
             content.min[axis]
         };
 
-        let scroll_id = self.gen_id(format!("##_SCROLLBAR_{}", axis));
+        let scroll_id = self.gen_id(&format!("##_SCROLLBAR_{}", axis));
         let scroll_pad = p.padding / 2.0 + p.scrollbar_padding / 2.0;
 
         let (min, max) = if axis == 1 {
@@ -770,12 +853,18 @@ impl Context {
             self.style.panel_dark_bg()
         };
 
-        self.draw_over(|list| {
-            list.rect(min, max)
-                .corners(CornerRadii::all(scrollbar_width * 0.3))
-                .fill(handle_col)
-                .add();
-        });
+        self.draw_over(
+            Rect::from_min_max(min, max)
+                .draw_rect()
+                .corners(scrollbar_width * 0.3)
+                .fill(handle_col),
+        );
+        // self.draw_over(|list| {
+        //     list.rect(min, max)
+        //         .corners(CornerRadii::all(scrollbar_width * 0.3))
+        //         .fill(handle_col)
+        //         .add();
+        // });
     }
 
     pub fn draw_panel_decorations(
@@ -793,22 +882,33 @@ impl Context {
 
         // draw titlebar background
         let title_text = self.layout_text(&title, self.style.text_size());
-        self.draw(|list| {
-            list.rect(
+        let pad = (titlebar_height - title_text.height) / 2.0;
+        self.draw(
+            Rect::from_min_max(
                 panel_pos,
                 panel_pos + Vec2::new(panel_size.x, titlebar_height),
             )
+            .draw_rect()
             .fill(self.style.titlebar_color())
-            .corners(CornerRadii::top(self.style.panel_corner_radius()))
-            .add();
+            .corners(CornerRadii::top(self.style.panel_corner_radius())),
+        )
+        .draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
+        // self.draw(|list| {
+        //     list.rect(
+        //         panel_pos,
+        //         panel_pos + Vec2::new(panel_size.x, titlebar_height),
+        //     )
+        //     .fill(self.style.titlebar_color())
+        //     .corners(CornerRadii::top(self.style.panel_corner_radius()))
+        //     .add();
 
-            let pad = (titlebar_height - title_text.height) / 2.0;
-            list.add_text(
-                panel_pos + Vec2::splat(pad),
-                &title_text,
-                self.style.text_col(),
-            )
-        });
+        //     let pad = (titlebar_height - title_text.height) / 2.0;
+        //     list.add_text(
+        //         panel_pos + Vec2::splat(pad),
+        //         &title_text,
+        //         self.style.text_col(),
+        //     )
+        // });
 
         let tb_sig = self.register_rect(
             move_id,
@@ -837,11 +937,12 @@ impl Context {
             };
 
             let x_icon = self.layout_icon(PhosphorFont::X, self.style.text_size());
-            self.draw(|list| {
-                let pad = btn_size - x_icon.size();
-                let pos = btn_pos + pad / 2.0;
-                list.add_text(pos, &x_icon, color);
-            });
+            let pad = btn_size - x_icon.size();
+            let pos = btn_pos + pad / 2.0;
+            self.draw(x_icon.draw_rects(pos, color));
+            // self.draw(|list| {
+            //     list.add_text(pos, &x_icon, color);
+            // });
 
             btn_x -= btn_size.x + btn_spacing;
         }
@@ -858,7 +959,7 @@ impl Context {
                 self.style.text_col()
             };
 
-            self.draw(|list| {
+            {
                 let max_icon = if self.window.is_maximized() {
                     self.layout_icon(PhosphorFont::MAXIMIZE_OFF, self.style.text_size())
                 } else {
@@ -866,8 +967,9 @@ impl Context {
                 };
                 let pad = btn_size - max_icon.size();
                 let pos = btn_pos + pad / 2.0;
-                list.add_text(pos, &max_icon, color);
-            });
+                self.draw(max_icon.draw_rects(pos, color));
+                // list.add_text(pos, &max_icon, color);
+            }
 
             btn_x -= btn_size.x + btn_spacing;
         }
@@ -885,11 +987,14 @@ impl Context {
             };
 
             let min_icon = self.layout_icon(PhosphorFont::MINIMIZE, self.style.text_size());
-            self.draw(|list| {
-                let pad = btn_size - min_icon.size();
-                let pos = btn_pos + pad / 2.0;
-                list.add_text(pos, &min_icon, color);
-            });
+            let pad = btn_size - min_icon.size();
+            let pos = btn_pos + pad / 2.0;
+            self.draw(min_icon.draw_rects(pos, color));
+            // self.draw(|list| {
+            //     let pad = btn_size - min_icon.size();
+            //     let pos = btn_pos + pad / 2.0;
+            //     list.add_text(pos, &min_icon, color);
+            // });
         }
 
         (tb_sig, min_sig, max_sig, close_sig)
@@ -1074,10 +1179,12 @@ impl Context {
         //             c.max_pos += Vec2::splat(p.padding);
         //         }
 
-        self.draw(|list| {
-            list.pop_clip_rect();
-            list.pop_clip_rect();
-        });
+        let list = self.current_drawlist();
+        list.pop_clip_rect_n(2);
+        // self.draw(|list| {
+        //     list.pop_clip_rect();
+        //     list.pop_clip_rect();
+        // });
 
         self.current_panel_stack.pop();
         self.current_panel_id = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
@@ -1320,20 +1427,25 @@ impl Context {
             };
 
             if self.draw_item_outline {
-                self.draw_over(|list| {
-                    list.add_rect_outline(
-                        rect.min,
-                        rect.max,
-                        Outline::outer(RGBA::PASTEL_YELLOW, 1.5),
-                    );
-                    if let Some(crect) = rect.clip(clip_rect) {
-                        list.add_rect_outline(
-                            crect.min,
-                            crect.max,
-                            Outline::outer(RGBA::YELLOW, 1.5),
-                        );
-                    }
-                });
+                // self.draw_over(|list| {
+                self.draw_over(
+                    rect.draw_rect()
+                        .outline(Outline::outer(RGBA::PASTEL_YELLOW, 1.5)),
+                );
+                // list.add_rect_outline(
+                //     rect.min,
+                //     rect.max,
+                //     Outline::outer(RGBA::PASTEL_YELLOW, 1.5),
+                // );
+                if let Some(crect) = rect.clip(clip_rect) {
+                    self.draw_over(crect.draw_rect().outline(Outline::outer(RGBA::YELLOW, 1.5)));
+                    // list.add_rect_outline(
+                    //     crect.min,
+                    //     crect.max,
+                    //     Outline::outer(RGBA::YELLOW, 1.5),
+                    // );
+                }
+                // });
             }
 
             self.prev_item_data.clipped_rect = crect;
@@ -1428,8 +1540,9 @@ impl Context {
     }
 
     pub fn create_panel(&mut self, name: impl Into<String>) -> Id {
-        let mut p = Panel::new(name);
-        let id = p.id;
+        let name: String = name.into();
+        let mut p = Panel::new(&name);
+        let id = self.gen_id(&name);
         p.frame_created = self.frame_count;
 
         if self.next.initial_width.is_finite() {
@@ -1452,15 +1565,15 @@ impl Context {
         }
     }
 
-    pub fn get_panel_id_with_name(&self, name: &str) -> Id {
-        let id = Id::from_str(name);
-        // if self.panels.contains_key(&id) {
-        if self.panels.contains_id(id) {
-            id
-        } else {
-            Id::NULL
-        }
-    }
+    // pub fn get_panel_id_with_name(&self, name: &str) -> Id {
+    //     let id = self.gen_id(name);
+    //     // if self.panels.contains_key(&id) {
+    //     if self.panels.contains_id(id) {
+    //         id
+    //     } else {
+    //         Id::NULL
+    //     }
+    // }
 
     pub fn get_panel_name_with_id(&self, id: Id) -> Option<String> {
         if !id.is_null() {
@@ -1514,7 +1627,34 @@ impl Context {
         self.panels[root_id].draw_order = new_order;
     }
 
-    pub fn begin_child(&mut self) {
+    pub fn begin_child(&mut self, name: &str) {
+        let id = self.gen_id(name);
+        let panel_flags = PanelFlags::NO_TITLEBAR | PanelFlags::USE_PARENT_DRAWLIST;
+
+        let parent = &mut self.panels[self.current_panel_id];
+        let root = parent.root;
+        let nav_root = parent.nav_root;
+        parent.child_id = id;
+
+        self.next.pos = parent.cursor_pos();
+        self.begin_ex(name, panel_flags);
+
+        let child_id = self.current_panel_id;
+        assert!(id == child_id);
+
+        let child = &mut self.panels[child_id];
+        child.root = root;
+        child.nav_root = nav_root;
+    }
+
+    pub fn end_child(&mut self) {
+        let child_id = self.current_panel_id;
+        let size = self.panels[child_id].size;
+        self.end();
+
+        let parent = self.current_panel_id;
+        assert!(self.panels[parent].child_id == child_id);
+        self.place_item(Id::NULL, size);
     }
 
     pub fn begin_frame(&mut self) {
@@ -1622,15 +1762,20 @@ impl Context {
 
         self.separator_h(4.0, self.style.panel_dark_bg());
 
+        // self.begin_child("text");
         let mut flags = TextInputFlags::NONE;
         if self.checkbox_intern("multiline input (buggy)") {
             flags |= TextInputFlags::MULTILINE
-        } 
+        }
         if self.checkbox_intern("select text on activation") {
             flags |= TextInputFlags::SELECT_ON_ACTIVE;
-        } 
-        self.text_input_ex("this is a text input field", flags);
+        }
 
+        let avail = self.available_content();
+        self.current_drawlist().push_clip_rect(Rect::from_min_size(self.cursor_pos(), Vec2::new(avail.x, 30.0)));
+        self.text_input_ex("this is a text input field", flags);
+        self.current_drawlist().pop_clip_rect();
+        // self.end_child();
 
         self.move_down(10.0);
         self.begin_tabbar("tabbar");
@@ -1737,7 +1882,6 @@ impl Context {
     }
 
     pub fn end_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-
         if !self.style.var_stack.is_empty() {
             log::warn!("style stack is not empty");
         }
@@ -1753,8 +1897,11 @@ impl Context {
         // && self.hot_id != self.active_id
         {
             // set active id to panel id if we pressed mouse and dont hover any items
-            if self.hot_id.is_null() || self.panels.contains_id(self.hot_id) {
+            if self.hot_id.is_null() {
                 self.active_id = self.hot_id;
+            } else if self.panels.contains_id(self.hot_id) {
+                let panel = &self.panels[self.hot_id];
+                self.active_id = panel.root;
             }
             self.active_panel_id = self.hot_panel_id;
 
@@ -1870,7 +2017,12 @@ impl Context {
             let uv_min = g.meta.uv_min;
             let uv_max = g.meta.uv_max;
 
-            self.draw(|list| list.rect(min, max).texture_uv(uv_min, uv_max, 1).add())
+            self.draw(
+                Rect::from_min_max(min, max)
+                    .draw_rect()
+                    .texture(1)
+                    .uv(uv_min, uv_max),
+            );
         }
     }
 
@@ -1919,10 +2071,12 @@ impl Context {
 
     pub fn build_draw_list(draw_buff: &mut DrawCallList, draw_list: &DrawList, screen_size: Vec2) {
         // let draw_list = self.panels[id].draw_list.borrow();
-        // println!("{} draw_list:\n{:#?}", self.panels[id].name, draw_list);
-        for cmd in &draw_list.cmd_buffer {
-            let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
-            let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
+        // println!("draw_list:\n{:#?}", draw_list);
+        // for cmd in &draw_list.cmd_buffer
+
+        for cmd in draw_list.commands().iter() {
+            let vtx = &draw_list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
+            let idx = &draw_list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
 
             let mut curr_clip = draw_buff.current_clip_rect();
             curr_clip.min = curr_clip.min.max(Vec2::ZERO);
@@ -1948,9 +2102,9 @@ impl Context {
     ) {
         // let draw_list = self.panels[id].draw_list.borrow();
         // println!("{} draw_list:\n{:#?}", self.panels[id].name, draw_list);
-        for cmd in &draw_list.cmd_buffer {
-            let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
-            let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
+        for cmd in draw_list.commands().iter() {
+            let vtx = draw_list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
+            let idx = draw_list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
 
             for i in idx.chunks_exact(3) {
                 let v0 = vtx[i[0] as usize];
@@ -1976,11 +2130,15 @@ impl Context {
         draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
 
         for &id in &self.draw_order {
-            let draw_list = self.panels[id].draw_list.borrow();
-            Self::build_draw_list(draw_buff, &draw_list, self.draw.screen_size);
+            let p = &self.panels[id];
 
-            let draw_list = self.panels[id].draw_list_over.borrow();
-            Self::build_draw_list(draw_buff, &draw_list, self.draw.screen_size);
+            if p.flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
+                continue
+            }
+
+            Self::build_draw_list(draw_buff, &p.draw_list, self.draw.screen_size);
+            Self::build_draw_list(draw_buff, &p.draw_list_over, self.draw.screen_size);
+
             // self.build_draw_list(&draw_list);
         }
 
@@ -1993,7 +2151,13 @@ impl Context {
         draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
 
         for &id in &self.draw_order {
-            let draw_list = self.panels[id].draw_list.borrow();
+            let p = &self.panels[id];
+
+            if p.flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
+                continue
+            }
+
+            let draw_list = &p.draw_list;
             Self::build_debug_draw_list(draw_buff, &draw_list, self.draw.screen_size);
         }
         self.upload_draw_data();
@@ -2011,6 +2175,9 @@ pub struct Panel {
 
     pub root: Id,
     pub nav_root: Id,
+
+    pub parent_id: Id,
+    pub child_id: Id,
 
     pub padding: f32,
     pub titlebar_height: f32,
@@ -2063,8 +2230,8 @@ pub struct Panel {
     pub is_window_panel: bool,
 
     // try to not borrow outside of impl Panel { ... }
-    pub draw_list: RefCell<DrawList>,
-    pub draw_list_over: RefCell<DrawList>,
+    pub draw_list: DrawList,
+    pub draw_list_over: DrawList,
     pub id_stack: RefCell<Vec<Id>>,
     pub _cursor: RefCell<Cursor>,
     pub scroll_offset: f32,
@@ -2094,6 +2261,8 @@ impl Panel {
         Self {
             name,
             id,
+            parent_id: Id::NULL,
+            child_id: Id::NULL,
             root: Id::NULL,
             nav_root: Id::NULL,
             flags: PanelFlags::NONE,
@@ -2125,8 +2294,8 @@ impl Panel {
             close_pressed: false,
             is_window_panel: false,
 
-            draw_list: RefCell::new(DrawList::new()),
-            draw_list_over: RefCell::new(DrawList::new()),
+            draw_list: DrawList::new(),
+            draw_list_over: DrawList::new(),
             id_stack: RefCell::new(Vec::new()),
             _cursor: RefCell::new(Cursor::default()),
             scroll_offset: 0.0,
@@ -2290,7 +2459,7 @@ impl Panel {
     }
 
     pub fn current_clip_rect(&self) -> Rect {
-        self.draw_list.borrow().current_clip_rect()
+        self.draw_list.current_clip_rect()
     }
 
     pub fn push_id(&self, id: Id) {
@@ -2312,8 +2481,8 @@ impl Panel {
     }
 
     pub fn clear_temp_data(&mut self) {
-        self.draw_list.get_mut().clear();
-        self.draw_list_over.get_mut().clear();
+        self.draw_list.clear();
+        self.draw_list_over.clear();
         self.root = Id::NULL;
     }
 
@@ -2488,6 +2657,12 @@ pub struct CornerRadii {
     tr: f32,
     bl: f32,
     br: f32,
+}
+
+impl From<f32> for CornerRadii {
+    fn from(value: f32) -> Self {
+        Self::all(value)
+    }
 }
 
 impl CornerRadii {
@@ -3310,6 +3485,8 @@ macros::flags!(PanelFlags:
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
     DONT_KEEP_SCROLLBAR_PAD,
+    USE_PARENT_DRAWLIST,
+    DONT_CLIP_CONTENT,
 );
 
 macros::flags!(TextInputFlags:
@@ -3420,9 +3597,199 @@ impl Default for DrawCmd {
     }
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct DrawList {
+    pub data: Rc<RefCell<DrawListData>>,
+}
+
+impl DrawList {
+    pub fn new() -> Self {
+        let data = Rc::new(RefCell::new(DrawListData::new()));
+        Self { data }
+    }
+
+    pub fn commands(&self) -> Ref<'_, [DrawCmd]> {
+        Ref::map(self.data.borrow(), |data| data.cmd_buffer.as_slice())
+    }
+
+    pub fn vtx_slice(&self, range: std::ops::Range<usize>) -> Ref<'_, [Vertex]> {
+        Ref::map(self.data.borrow(), |data| &data.vtx_buffer[range])
+    }
+
+    pub fn idx_slice(&self, range: std::ops::Range<usize>) -> Ref<'_, [u32]> {
+        Ref::map(self.data.borrow(), |data| &data.idx_buffer[range])
+    }
+
+    pub fn current_clip_rect(&self) -> Rect {
+        self.data
+            .borrow()
+            .clip_stack
+            .last()
+            .copied()
+            .unwrap_or(Rect::INFINITY)
+    }
+
+    pub fn add_draw_rect(&self, rect: DrawRect) {
+        self.data.borrow_mut().add_rect_rounded(
+            rect.min,
+            rect.max,
+            rect.uv_min,
+            rect.uv_max,
+            rect.texture_id,
+            rect.fill,
+            rect.outline,
+            rect.corners,
+        );
+    }
+
+    pub fn clear(&self) {
+        let mut data = self.data.borrow_mut();
+        data.clear();
+    }
+
+    pub fn add(&self, itm: impl DrawableRects) {
+        itm.add_to_drawlist(self);
+    }
+
+    pub fn pop_clip_rect_n(&self, n: u32) {
+        let mut data = self.data.borrow_mut();
+        for _ in 0..n {
+            data.pop_clip_rect();
+        }
+    }
+
+    pub fn pop_clip_rect(&self) -> Rect {
+        self.data.borrow_mut().pop_clip_rect()
+    }
+
+    pub fn push_clip_rect(&self, rect: Rect) {
+        self.data.borrow_mut().push_clip_rect(rect)
+    }
+    // pub fn vertices(&self) -> Ref<'_, [Vertex]> {
+    //     Ref::map(self.data.borrow(), |data| &data.vtx_buffer)
+    // }
+
+    // pub fn indices(&self) -> Ref<'_, [u32]> {
+    //     Ref::map(self.data.borrow(), |data| &data.idx_buffer)
+    // }
+
+    // /// Draw shaped text with optional selection and cursor.
+    // /// - `selection_range`: Some((start_glyph_idx, end_glyph_idx)) where `end` is exclusive.
+    // /// - `cursor_x`: x position in text-local coordinates (relative to `pos`) where the caret should be drawn.
+    // /// - `selection_color` is used to draw the highlight rectangle(s).
+    // /// - `selected_text_color` is used to color glyphs inside the selection.
+    // pub fn add_editable_text(
+    //     &mut self,
+    //     pos: Vec2,
+    //     text: &ShapedText,
+    //     text_color: RGBA,
+    //     selection_range: Option<(usize, usize)>,
+    //     selection_color: RGBA,
+    //     selected_text_color: RGBA,
+    //     cursor_x: Option<f32>,
+    //     cursor_color: RGBA,
+    // ) {
+    //     // Draw selection as merged rectangles across contiguous glyphs
+    //     if let Some((sel_start, sel_end)) = selection_range {
+    //         if sel_start < sel_end && !text.glyphs.is_empty() {
+    //             let mut in_range = false;
+    //             let mut range_min_x = 0.0f32;
+    //             let mut range_max_x = 0.0f32;
+
+    //             for (i, g) in text.glyphs.iter().enumerate() {
+    //                 let g_min = g.meta.pos + pos;
+    //                 let g_max = g_min + g.meta.size;
+
+    //                 if i >= sel_start && i < sel_end {
+    //                     if !in_range {
+    //                         in_range = true;
+    //                         range_min_x = g_min.x;
+    //                         range_max_x = g_max.x;
+    //                     } else {
+    //                         range_max_x = range_max_x.max(g_max.x);
+    //                     }
+    //                 } else if in_range {
+    //                     // self.rect(
+    //                     //     Vec2::new(range_min_x, pos.y),
+    //                     //     Vec2::new(range_max_x, pos.y + text.height),
+    //                     // )
+    //                     // .fill(selection_color)
+    //                     // .add();
+    //                     in_range = false;
+    //                 }
+    //             }
+
+    //             if in_range {
+    //                 self.add(
+    //                     Rect::from_min_size(
+    //                     Vec2::new(range_min_x, pos.y),
+    //                     Vec2::new(range_max_x, pos.y + text.height))
+    //                     .draw_rect().fill(selection_color),
+    //                 );
+    //                 // .fill(selection_color)
+    //                 // .add();
+    //             }
+
+    //             // Special-case: empty text or selection that extends past last glyph -> highlight to end
+    //             if text.glyphs.is_empty() {
+    //                 // self.rect(
+    //                 self.add(Rect::from_min_max(
+    //                     Vec2::new(pos.x, pos.y),
+    //                     Vec2::new(pos.x + text.width, pos.y + text.height)).draw_rect().fill(selection_color));
+    //                 // )
+    //                 // .fill(selection_color)
+    //                 // .add();
+    //             } else if sel_end > text.glyphs.len() {
+    //                 // If selection extends beyond last glyph, ensure we cover to end of line
+    //                 let last = &text.glyphs.last().unwrap();
+    //                 let last_min = last.meta.pos + pos;
+    //                 let end_x = pos.x + text.width.max(last_min.x + last.meta.size.x);
+    //                 self.rect(
+    //                     Rect::from_min_max(
+    //                     Vec2::new(last_min.x + last.meta.size.x, pos.y),
+    //                     Vec2::new(end_x, pos.y + text.height)),
+    //                 )
+    //                 .fill(selection_color)
+    //                 .add();
+    //             }
+    //         }
+    //     }
+
+    //     // Draw cursor (thin vertical rectangle)
+    //     if let Some(cx_rel) = cursor_x {
+    //         let cx = pos.x + cx_rel;
+    //         let caret_w = 1.0_f32;
+    //         self.rect(
+    //             Vec2::new(cx, pos.y),
+    //             Vec2::new(cx + caret_w, pos.y + text.height),
+    //         )
+    //         .fill(cursor_color)
+    //         .add();
+    //     }
+
+    //     // Draw glyphs (texture quads) with selected_text_color when inside selection
+    //     for (i, g) in text.glyphs.iter().enumerate() {
+    //         let min = g.meta.pos + pos;
+    //         let max = min + g.meta.size;
+    //         let uv_min = g.meta.uv_min;
+    //         let uv_max = g.meta.uv_max;
+
+    //         let glyph_color = match selection_range {
+    //             Some((s, e)) if i >= s && i < e => selected_text_color,
+    //             _ => text_color,
+    //         };
+
+    //         self.rect(min, max)
+    //             .texture_uv(uv_min, uv_max, 1)
+    //             .fill(glyph_color)
+    //             .add()
+    //     }
+    // }
+}
+
 /// The draw list itself: holds geometry and draw commands
 #[derive(Clone)]
-pub struct DrawList {
+pub struct DrawListData {
     pub vtx_buffer: Vec<Vertex>,
     pub idx_buffer: Vec<u32>,
     pub cmd_buffer: Vec<DrawCmd>,
@@ -3435,7 +3802,7 @@ pub struct DrawList {
     pub clip_content: bool,
 }
 
-impl fmt::Debug for DrawList {
+impl fmt::Debug for DrawListData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DrawList")
             .field("vtx_buffer_size", &self.vtx_buffer.len())
@@ -3447,7 +3814,7 @@ impl fmt::Debug for DrawList {
     }
 }
 
-impl Default for DrawList {
+impl Default for DrawListData {
     fn default() -> Self {
         Self {
             vtx_buffer: vec![],
@@ -3469,7 +3836,7 @@ fn calc_circle_segment_count(rad: f32, max_err: f32) -> u8 {
     tmp.clamp(4, 512) as u8
 }
 
-impl DrawList {
+impl DrawListData {
     pub fn new() -> Self {
         Self::default()
     }
@@ -3486,7 +3853,7 @@ impl DrawList {
         calc_circle_segment_count(radius, self.circle_max_err)
     }
 
-    pub fn set_clip_rect(&mut self, mut rect: Rect) {
+    pub fn set_clip_rect(&mut self, rect: Rect) {
         if rect == Rect::ZERO {
             log::warn!("zero clip rect set");
         }
@@ -3494,7 +3861,7 @@ impl DrawList {
         if cmd.clip_rect == Rect::ZERO {
             cmd.clip_rect = rect;
         } else if cmd.clip_rect != rect {
-            let cmd = self.push_draw_cmd();
+            let cmd = self.begin_draw_cmd();
             cmd.clip_rect = rect;
         }
     }
@@ -3529,11 +3896,25 @@ impl DrawList {
         self.clip_stack.last().copied().unwrap_or(Rect::INFINITY)
     }
 
-    pub fn push_draw_cmd(&mut self) -> &mut DrawCmd {
+    pub fn finish_draw_cmd(&mut self) {
+        if self.cmd_buffer.is_empty() {
+            log::warn!("finishing empty draw command");
+        }
+        // finish by starting a new command
+        let _ = self.begin_draw_cmd();
+    }
+
+    pub fn begin_draw_cmd(&mut self) -> &mut DrawCmd {
+        let last = self.cmd_buffer.last().copied();
         self.cmd_buffer.push(DrawCmd::default());
         let cmd = self.cmd_buffer.last_mut().unwrap();
         cmd.vtx_offset = self.vtx_buffer.len();
         cmd.idx_offset = self.idx_buffer.len();
+
+        if let Some(last) = last {
+            cmd.texture_id = last.texture_id;
+            cmd.clip_rect = last.clip_rect;
+        }
         cmd
     }
 
@@ -3542,16 +3923,14 @@ impl DrawList {
             return;
         }
         let cmd = self.current_draw_cmd();
-        let prev_clip = cmd.clip_rect;
         // TODO[CHECK]: is this valid?
         // if cmd.texture_id == 0 {
         //     cmd.texture_id = tex_id;
         // }
 
         if cmd.texture_id != tex_id {
-            let cmd = self.push_draw_cmd();
+            let cmd = self.begin_draw_cmd();
             cmd.texture_id = tex_id;
-            cmd.clip_rect = prev_clip;
         }
     }
 
@@ -3568,13 +3947,13 @@ impl DrawList {
         cmd.idx_count += idx.len();
     }
 
-    pub fn circle(&mut self, center: Vec2, radius: f32) -> DrawRect<'_> {
+    pub fn circle(&mut self, center: Vec2, radius: f32) -> DrawRect {
         let r = Vec2::splat(radius);
         let min = center - r;
         let max = center + r;
 
         DrawRect {
-            draw_list: self,
+            // draw_list: self,
             min,
             max,
             uv_min: Vec2::ZERO,
@@ -3586,142 +3965,19 @@ impl DrawList {
         }
     }
 
-    pub fn rect(&mut self, min: Vec2, max: Vec2) -> DrawRect<'_> {
-        DrawRect {
-            draw_list: self,
-            min,
-            max,
-            uv_min: Vec2::ZERO,
-            uv_max: Vec2::ONE,
-            texture_id: 0,
-            fill: RGBA::ZERO,
-            outline: Outline::none(),
-            corners: CornerRadii::zero(),
-        }
-    }
+    // pub fn add_text(&mut self, pos: Vec2, text: &ShapedText, col: RGBA) {
+    //     for g in text.glyphs.iter() {
+    //         let min = g.meta.pos + pos;
+    //         let max = min + g.meta.size;
+    //         let uv_min = g.meta.uv_min;
+    //         let uv_max = g.meta.uv_max;
 
-    pub fn add_text(&mut self, pos: Vec2, text: &ShapedText, col: RGBA) {
-        for g in text.glyphs.iter() {
-            let min = g.meta.pos + pos;
-            let max = min + g.meta.size;
-            let uv_min = g.meta.uv_min;
-            let uv_max = g.meta.uv_max;
-
-            self.rect(min, max)
-                .texture_uv(uv_min, uv_max, 1)
-                .fill(col)
-                .add()
-        }
-    }
-
-    /// Draw shaped text with optional selection and cursor.
-    /// - `selection_range`: Some((start_glyph_idx, end_glyph_idx)) where `end` is exclusive.
-    /// - `cursor_x`: x position in text-local coordinates (relative to `pos`) where the caret should be drawn.
-    /// - `selection_color` is used to draw the highlight rectangle(s).
-    /// - `selected_text_color` is used to color glyphs inside the selection.
-    pub fn add_editable_text(
-        &mut self,
-        pos: Vec2,
-        text: &ShapedText,
-        text_color: RGBA,
-        selection_range: Option<(usize, usize)>,
-        selection_color: RGBA,
-        selected_text_color: RGBA,
-        cursor_x: Option<f32>,
-        cursor_color: RGBA,
-    ) {
-        // Draw selection as merged rectangles across contiguous glyphs
-        if let Some((sel_start, sel_end)) = selection_range {
-            if sel_start < sel_end && !text.glyphs.is_empty() {
-                let mut in_range = false;
-                let mut range_min_x = 0.0f32;
-                let mut range_max_x = 0.0f32;
-
-                for (i, g) in text.glyphs.iter().enumerate() {
-                    let g_min = g.meta.pos + pos;
-                    let g_max = g_min + g.meta.size;
-
-                    if i >= sel_start && i < sel_end {
-                        if !in_range {
-                            in_range = true;
-                            range_min_x = g_min.x;
-                            range_max_x = g_max.x;
-                        } else {
-                            range_max_x = range_max_x.max(g_max.x);
-                        }
-                    } else if in_range {
-                        self.rect(
-                            Vec2::new(range_min_x, pos.y),
-                            Vec2::new(range_max_x, pos.y + text.height),
-                        )
-                        .fill(selection_color)
-                        .add();
-                        in_range = false;
-                    }
-                }
-
-                if in_range {
-                    self.rect(
-                        Vec2::new(range_min_x, pos.y),
-                        Vec2::new(range_max_x, pos.y + text.height),
-                    )
-                    .fill(selection_color)
-                    .add();
-                }
-
-                // Special-case: empty text or selection that extends past last glyph -> highlight to end
-                if text.glyphs.is_empty() {
-                    self.rect(
-                        Vec2::new(pos.x, pos.y),
-                        Vec2::new(pos.x + text.width, pos.y + text.height),
-                    )
-                    .fill(selection_color)
-                    .add();
-                } else if sel_end > text.glyphs.len() {
-                    // If selection extends beyond last glyph, ensure we cover to end of line
-                    let last = &text.glyphs.last().unwrap();
-                    let last_min = last.meta.pos + pos;
-                    let end_x = pos.x + text.width.max(last_min.x + last.meta.size.x);
-                    self.rect(
-                        Vec2::new(last_min.x + last.meta.size.x, pos.y),
-                        Vec2::new(end_x, pos.y + text.height),
-                    )
-                    .fill(selection_color)
-                    .add();
-                }
-            }
-        }
-
-        // Draw cursor (thin vertical rectangle)
-        if let Some(cx_rel) = cursor_x {
-            let cx = pos.x + cx_rel;
-            let caret_w = 1.0_f32;
-            self.rect(
-                Vec2::new(cx, pos.y),
-                Vec2::new(cx + caret_w, pos.y + text.height),
-            )
-            .fill(cursor_color)
-            .add();
-        }
-
-        // Draw glyphs (texture quads) with selected_text_color when inside selection
-        for (i, g) in text.glyphs.iter().enumerate() {
-            let min = g.meta.pos + pos;
-            let max = min + g.meta.size;
-            let uv_min = g.meta.uv_min;
-            let uv_max = g.meta.uv_max;
-
-            let glyph_color = match selection_range {
-                Some((s, e)) if i >= s && i < e => selected_text_color,
-                _ => text_color,
-            };
-
-            self.rect(min, max)
-                .texture_uv(uv_min, uv_max, 1)
-                .fill(glyph_color)
-                .add()
-        }
-    }
+    //         self.rect(min, max)
+    //             .texture_uv(uv_min, uv_max, 1)
+    //             .fill(col)
+    //             .add()
+    //     }
+    // }
 
     #[inline]
     pub fn push_clipped_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
@@ -3944,7 +4200,9 @@ impl DrawList {
         let clip = self.current_clip_rect();
         if !(clip.contains(min - offset) || clip.contains(max + offset)) {
             return;
-        } else if !clip.contains(min - offset) || !clip.contains(max + offset) {
+        } 
+        
+        if !clip.contains(min - offset) || !clip.contains(max + offset) {
             self.current_draw_cmd().clip_rect_used = true;
         }
 
@@ -4545,8 +4803,9 @@ pub fn is_in_resize_region(r: Rect, pnt: Vec2, thr: f32) -> Option<Dir> {
     }
 }
 
-pub struct DrawRect<'a> {
-    pub draw_list: &'a mut DrawList,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawRect {
+    // pub draw_list: &'a mut DrawList,
     pub min: Vec2,
     pub max: Vec2,
     pub uv_min: Vec2,
@@ -4557,7 +4816,90 @@ pub struct DrawRect<'a> {
     pub corners: CornerRadii,
 }
 
-impl DrawRect<'_> {
+impl ShapedText {
+    pub fn draw_rects(&self, pos: Vec2, col: RGBA) -> Vec<DrawRect> {
+        let mut rects = Vec::new();
+        for g in self.glyphs.iter() {
+            let min = g.meta.pos + pos;
+            let max = min + g.meta.size;
+            let uv_min = g.meta.uv_min;
+            let uv_max = g.meta.uv_max;
+
+            rects.push(
+                DrawRect::new(min, max)
+                    .fill(col)
+                    .texture(1)
+                    .uv(uv_min, uv_max),
+            );
+            // DrawRect::new(min, max)
+            //     .texture(1)
+            //     .uv(uv_min, uv_max)
+            // self.rect(min, max)
+            //     .texture_uv(uv_min, uv_max, 1)
+            //     .fill(col)
+            //     .add()
+        }
+        rects
+    }
+}
+
+pub trait DrawableRects {
+    fn add_to_drawlist(self, drawlist: &DrawList);
+}
+
+impl<'a, I> DrawableRects for I
+where
+    I: IntoIterator,
+    I::Item: DrawableRects,
+{
+    fn add_to_drawlist(self, drawlist: &DrawList) {
+        for drawable in self.into_iter() {
+            drawable.add_to_drawlist(drawlist);
+        }
+    }
+}
+
+impl DrawableRects for DrawRect {
+    fn add_to_drawlist(self, drawlist: &DrawList) {
+        drawlist.data.borrow_mut().add_rect_rounded(
+            self.min,
+            self.max,
+            self.uv_min,
+            self.uv_max,
+            self.texture_id,
+            self.fill,
+            self.outline,
+            self.corners,
+        );
+    }
+}
+
+impl Rect {
+    pub fn draw_rect(self) -> DrawRect {
+        DrawRect::new(self.min, self.max)
+    }
+}
+
+impl DrawRect {
+    pub fn new(min: Vec2, max: Vec2) -> Self {
+        DrawRect {
+            min,
+            max,
+            uv_min: Vec2::ZERO,
+            uv_max: Vec2::ONE,
+            texture_id: 0,
+            fill: RGBA::ZERO,
+            outline: Outline::none(),
+            corners: CornerRadii::zero(),
+        }
+    }
+
+    pub fn offset(mut self, offset: Vec2) -> Self {
+        self.min += offset;
+        self.max += offset;
+        self
+    }
+
     pub fn fill(mut self, fill: RGBA) -> Self {
         self.fill = fill;
         self
@@ -4568,15 +4910,21 @@ impl DrawRect<'_> {
         self
     }
 
-    pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
+    pub fn uv(mut self, uv_min: Vec2, uv_max: Vec2) -> Self {
         self.uv_min = uv_min;
         self.uv_max = uv_max;
-        self.texture_id = id;
-        if self.fill.a == 0.0 {
-            self.fill = RGBA::WHITE
-        }
         self
     }
+
+    // pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
+    //     self.uv_min = uv_min;
+    //     self.uv_max = uv_max;
+    //     self.texture_id = id;
+    //     if self.fill.a == 0.0 {
+    //         self.fill = RGBA::WHITE
+    //     }
+    //     self
+    // }
 
     pub fn texture(mut self, id: u32) -> Self {
         self.texture_id = id;
@@ -4593,23 +4941,23 @@ impl DrawRect<'_> {
         self.corners(CornerRadii::all(rad))
     }
 
-    pub fn corners(mut self, corners: CornerRadii) -> Self {
-        self.corners = corners;
+    pub fn corners(mut self, corners: impl Into<CornerRadii>) -> Self {
+        self.corners = corners.into();
         self
     }
 
-    pub fn add(self) {
-        self.draw_list.add_rect_rounded(
-            self.min,
-            self.max,
-            self.uv_min,
-            self.uv_max,
-            self.texture_id,
-            self.fill,
-            self.outline,
-            self.corners,
-        )
-    }
+    // pub fn add(self) {
+    //     self.draw_list.add_rect_rounded(
+    //         self.min,
+    //         self.max,
+    //         self.uv_min,
+    //         self.uv_max,
+    //         self.texture_id,
+    //         self.fill,
+    //         self.outline,
+    //         self.corners,
+    //     )
+    // }
 }
 
 //---------------------------------------------------------------------------------------
