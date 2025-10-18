@@ -1006,6 +1006,17 @@ impl<'a> Drop for RenderTarget<'a> {
 }
 
 impl<'a> RenderTarget<'a> {
+
+    pub fn target_size(&self) -> Vec2 {
+        let size = self.target_view.texture().size();
+        Vec2::new(size.width as f32, size.height as f32)
+    }
+
+    pub fn resolve_size(&self) -> Vec2 {
+        let size = self.target_view.texture().size();
+        Vec2::new(size.width as f32, size.height as f32)
+    }
+
     pub fn render<RH: RenderPassHandle>(&mut self, rh: &RH) {
         let n_passes = rh.n_render_passes();
 

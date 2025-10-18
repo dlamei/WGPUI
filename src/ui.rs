@@ -5483,10 +5483,11 @@ impl RenderPassHandle for MergedDrawLists {
             rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
             rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
 
-            let target_size = self.screen_size.as_uvec2();
+            let target_size = self.screen_size.floor().as_uvec2();
             let clip_min = clip.min.as_uvec2().max(UVec2::ZERO).min(target_size);
             let clip_max = clip.max.as_uvec2().max(clip_min).min(target_size);
             let clip_size = clip_max - clip_min;
+
 
             // let clip_min = clip.min.as_uvec2().clamp(Vec2::ZERO, target_size);
             // let clip_size = clip.size().as_uvec2().clamp(Vec2::ZERO, target_size);

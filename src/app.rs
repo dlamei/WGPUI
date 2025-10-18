@@ -401,6 +401,8 @@ impl App {
                 return;
             };
 
+            self.ui.draw.screen_size = target.target_size();
+
             target.render(&ClearScreen(RGBA::rgba_f(0.0, 0.0, 0.0, 0.0)));
             target.render(&self.ui.draw);
         }
