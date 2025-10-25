@@ -8,7 +8,11 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, HashSet, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, Vertex as VertexTyp
+    Vertex as VertexTyp,
+    core::{ArrVec, DataMap, Dir, HashMap, HashSet, Instant, RGBA, id_type, stacked_fields_struct},
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{Clipboard, CursorIcon, MouseBtn, MouseState},
+    rect::Rect,
 };
 
 // TODO[NOTE]: framepadding style?
@@ -63,8 +67,6 @@ fn dark_theme() -> StyleTable {
         }
     })
 }
-
-
 
 pub struct Context {
     // pub panels: HashMap<Id, Panel>,
@@ -222,7 +224,7 @@ impl Context {
             modifiers: winit::keyboard::ModifiersState::empty(),
             cursor_icon: CursorIcon::Default,
             cursor_icon_changed: false,
-            resize_threshold: 10.0,
+            resize_threshold: 5.0,
             scroll_speed: 1.0,
             n_draw_calls: 0,
 
@@ -358,7 +360,7 @@ impl Context {
             // self.panels[self.active_panel_id].move_scroll(delta * self.scroll_speed);
             // self.panels[self.active_panel_id].scroll += delta * self.scroll_speed;
         } else {
-            return
+            return;
         };
 
         // println!("{}", target.scrolling_past_bounds(delta));
@@ -370,7 +372,6 @@ impl Context {
         }
 
         target.set_scroll(delta);
-
     }
 
     pub fn set_mouse_press(&mut self, btn: MouseBtn, press: bool) {
@@ -481,7 +482,6 @@ impl Context {
     }
 
     pub fn begin_ex(&mut self, name: impl Into<String>, flags: PanelFlags) {
-
         fn next_window_pos(screen: Vec2, panel_size: Vec2) -> Vec2 {
             static mut PANEL_COUNT: u32 = 1;
             let offset = 60.0;
@@ -511,10 +511,9 @@ impl Context {
             newly_created = true;
         }
 
-
-        // clear panels children every frame 
+        // clear panels children every frame
         self.panels[id].children.clear();
-        
+
         // setup child / parent ids
         let (root_id, parent_id) = if flags.has(PanelFlags::IS_CHILD) {
             let parent_id = self.current_panel_id;
@@ -526,7 +525,6 @@ impl Context {
         } else {
             (id, Id::NULL)
         };
-
 
         if newly_created {
             if flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
@@ -647,16 +645,19 @@ impl Context {
             let thr = self.resize_threshold;
             // p.pos.x = p.pos.x.max(pos_bounds.left() - p.size.x + thr).min(pos_bounds.top() - tb_height);
             // p.pos.x = p.pos.x.max(-p.size.x + tb_height).min(screen.x - tb_height);
-            p.pos.x = p.pos.x.max(-p.size.x + pos_bounds.left() + tb_height).min(pos_bounds.right() - tb_height);
+            p.pos.x = p
+                .pos
+                .x
+                .max(-p.size.x + pos_bounds.left() + tb_height)
+                .min(pos_bounds.right() - tb_height);
             p.pos.y = p
                 .pos
                 .y
                 // .max(self.style.window_titlebar_height())
                 .max(pos_bounds.top())
                 .min(pos_bounds.bottom() - tb_height);
-                // .min(screen.y - tb_height);
+            // .min(screen.y - tb_height);
         }
-
 
         let p = &mut self.panels[id];
 
@@ -710,9 +711,6 @@ impl Context {
         p.full_rect = full_rect;
         p.clip_rect = clip_rect;
 
-
-
-
         let p = &self.panels[id];
         // let panel_rect = p.panel_rect();
 
@@ -727,7 +725,31 @@ impl Context {
             self.hot_id = id;
         }
 
+        if let PanelAction::Move {
+            id, dock_target, ..
+        } = &mut self.panel_action
+        {
+            if p.clip_rect.contains(self.mouse.pos) && self.panels[*id].titlebar_rect().contains(self.mouse.pos) && !self.modifiers.shift_key() {
+                let curr_draw_order = p.draw_order;
+                let moving_draw_order = self.panels[*id].draw_order;
+                let dock_target_draw_order = if !dock_target.is_null() {
+                    self.panels[*dock_target].draw_order
+                } else {
+                    0
+                };
 
+                if !flags.has(PanelFlags::NO_DOCKING)
+                    && curr_draw_order < moving_draw_order
+                    && (curr_draw_order > dock_target_draw_order || dock_target.is_null())
+                {
+                    // gets reset in update_panel_move
+                    *dock_target = p.id;
+                }
+            }
+
+        }
+
+        // let p = &self.panels[id];
 
         // TODO[NOTE]: include outline width in panel size
         // draw panel
@@ -997,9 +1019,9 @@ impl Context {
         let title_text = self.layout_text(&title, self.style.text_size());
         let pad = (titlebar_height - title_text.height) / 2.0;
         self.draw(
-            Rect::from_min_max(
+            Rect::from_min_size(
                 panel_pos,
-                panel_pos + Vec2::new(panel_size.x, titlebar_height),
+                Vec2::new(panel_size.x, titlebar_height),
             )
             .draw_rect()
             .fill(self.style.titlebar_color())
@@ -1241,11 +1263,68 @@ impl Context {
         }
     }
 
+    pub fn compute_dock_preview(mouse: Vec2, dock_target: Rect) -> Rect {
+        let mut preview = dock_target;
+        let mut delta = (mouse - preview.center()) / preview.size() * 2.0;
+        delta.x = delta.x.clamp(-1.0, 1.0);
+        delta.y = delta.y.clamp(-1.0, 1.0);
+
+        // pick dominant axis (horizontal vs vertical split)
+        let use_horizontal = delta.x.abs() >= delta.y.abs();
+
+        // minimum preview size to avoid inversion
+        let min_px = 8.0_f32;
+
+        if use_horizontal {
+            // compute candidate left/right based on delta.x (negative -> grow from left, positive -> grow from right)
+            let right = if delta.x >= 0.0 {
+                preview.right()
+            } else {
+                preview.left() + (delta.x + 1.0) * preview.width()
+            };
+
+            let left = if delta.x <= 0.0 {
+                preview.left()
+            } else {
+                preview.right() - (1.0 - delta.x) * preview.width()
+            };
+
+            // clamp and ensure min width
+            let left = left.clamp(preview.left(), preview.right() - min_px);
+            let right = right.clamp(preview.left() + min_px, preview.right());
+
+            preview.set_left(left);
+            preview.set_right(right);
+        } else {
+            // vertical split: negative -> grow from top, positive -> grow from bottom
+            let bottom = if delta.y >= 0.0 {
+                preview.bottom()
+            } else {
+                preview.top() + (delta.y + 1.0) * preview.height()
+            };
+
+            let top = if delta.y <= 0.0 {
+                preview.top()
+            } else {
+                preview.bottom() - (1.0 - delta.y) * preview.height()
+            };
+
+            // clamp and ensure min height
+            let top = top.clamp(preview.top(), preview.bottom() - min_px);
+            let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
+
+            preview.set_top(top);
+            preview.set_bottom(bottom);
+        }
+
+        preview
+    }
+
     pub fn update_panel_move(&mut self) {
         // TODO[BUG]: after drag quickly drag over another panel make the wrong panel move
         // probably because of prev_active_panel_id and not current id
-        if !self.prev_active_panel_id.is_null() {
-            let p = &mut self.panels[self.prev_active_panel_id];
+        if !self.active_panel_id.is_null() {
+            let p = &mut self.panels[self.active_panel_id];
             if self.active_id == p.move_id && !p.move_id.is_null()
             // || self.active_id == p.id && p.nav_root == p.move_id
             {
@@ -1253,17 +1332,139 @@ impl Context {
                     self.panel_action = PanelAction::Move {
                         id: p.root,
                         start_pos: p.pos,
+                        dock_target: Id::NULL,
                     }
                 }
-                if !self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_move() {
-                    self.panel_action = PanelAction::None;
+
+                if let PanelAction::Move { id, dock_target, .. } = self.panel_action {
+                    if !self.mouse.dragging(MouseBtn::Left) {
+
+                        if !dock_target.is_null() {
+                            let dock_target_panel = &mut self.panels[dock_target];
+                            let preview = Self::compute_dock_preview(self.mouse.pos, dock_target_panel.visible_content_rect());
+
+                            let p = &mut self.panels[id];
+                            p.pos = preview.min;
+                            p.size = preview.size();
+                        }
+
+                        self.panel_action = PanelAction::None;
+                    }
                 }
             }
+        }
+
+        // update dock target
+        if let PanelAction::Move { dock_target, .. } = &mut self.panel_action {
+            if !dock_target.is_null()
+                && (!self.panels[*dock_target].clip_rect.contains(self.mouse.pos) || self.modifiers.shift_key())
+            {
+                *dock_target = Id::NULL
+            }
+
+            if !dock_target.is_null() {
+                let dock_target_panel = &mut self.panels[*dock_target];
+                // let mut preview = dock_target_panel.visible_content_rect();
+                let mut fill = self.style.btn_press();
+                fill.a = 0.3;
+
+                let preview = Self::compute_dock_preview(self.mouse.pos, dock_target_panel.visible_content_rect());
+
+//                 // delta in [-1..1] across each axis
+//                 let mut delta = (self.mouse.pos - preview.center()) / preview.size() * 2.0;
+//                 delta.x = delta.x.clamp(-1.0, 1.0);
+//                 delta.y = delta.y.clamp(-1.0, 1.0);
+
+//                 // pick dominant axis (horizontal vs vertical split)
+//                 let use_horizontal = delta.x.abs() >= delta.y.abs();
+
+//                 // minimum preview size to avoid inversion
+//                 let min_px = 8.0_f32;
+
+//                 if use_horizontal {
+//                     // compute candidate left/right based on delta.x (negative -> grow from left, positive -> grow from right)
+//                     let right = if delta.x >= 0.0 {
+//                         preview.right()
+//                     } else {
+//                         preview.left() + (delta.x + 1.0) * preview.width()
+//                     };
+
+//                     let left = if delta.x <= 0.0 {
+//                         preview.left()
+//                     } else {
+//                         preview.right() - (1.0 - delta.x) * preview.width()
+//                     };
+
+//                     // clamp and ensure min width
+//                     let left = left.clamp(preview.left(), preview.right() - min_px);
+//                     let right = right.clamp(preview.left() + min_px, preview.right());
+
+//                     preview.set_left(left);
+//                     preview.set_right(right);
+//                 } else {
+//                     // vertical split: negative -> grow from top, positive -> grow from bottom
+//                     let bottom = if delta.y >= 0.0 {
+//                         preview.bottom()
+//                     } else {
+//                         preview.top() + (delta.y + 1.0) * preview.height()
+//                     };
+
+//                     let top = if delta.y <= 0.0 {
+//                         preview.top()
+//                     } else {
+//                         preview.bottom() - (1.0 - delta.y) * preview.height()
+//                     };
+
+//                     // clamp and ensure min height
+//                     let top = top.clamp(preview.top(), preview.bottom() - min_px);
+//                     let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
+
+//                     preview.set_top(top);
+//                     preview.set_bottom(bottom);
+//                 }
+
+                dock_target_panel
+                    .drawlist_over
+                    .add(preview.draw_rect().corners(self.style.panel_corner_radius()).fill(fill));
+                }
+
+
+            // if !dock_target.is_null() {
+            //     let dock_target_panel = &mut self.panels[*dock_target];
+            //     let mut preview = dock_target_panel.visible_content_rect();
+            //     let mut fill = self.style.btn_press();
+            //     fill.a = 0.3;
+
+            //     let delta = (self.mouse.pos - preview.center()) / preview.size() * 2.0;
+
+            //     let right = if delta.x >= 0.0 {
+            //         preview.right()
+            //     } else {
+            //         preview.left() + (delta.x + 1.0) * preview.width()
+            //     };
+
+            //     let left = if delta.x <= 0.0 {
+            //         preview.left()
+            //     } else {
+            //         preview.right() - (1.0 - delta.x) * preview.width()
+            //     };
+
+            //     // println!("{delta}");
+            //     preview.set_right(right);
+            //     preview.set_left(left);
+
+            //     dock_target_panel
+            //         .drawlist_over
+            //         .add(preview.draw_rect()
+            //             .corners(self.style.panel_corner_radius())
+            //             .fill(fill));
+            // }
         }
 
         if let &PanelAction::Move {
             start_pos,
             id: drag_id,
+            dock_target,
         } = &self.panel_action
         {
             if self.mouse.dragging(MouseBtn::Left) {
@@ -1283,6 +1484,13 @@ impl Context {
         if let Some(name) = name {
             assert!(name == &p.name);
         }
+
+        self.end();
+    }
+
+    pub fn end(&mut self) {
+        let p = self.get_current_panel();
+        let id = p.id;
 
         let p = self.get_current_panel();
         let p_pad = p.padding;
@@ -1310,12 +1518,11 @@ impl Context {
         let prev_max_pos = p.cursor_max_pos();
         let prev_content_start = p.content_start_pos();
 
-        p.init_content_cursor(p.visible_content_start_pos());
+        // p.init_content_cursor(p.visible_content_start_pos());
 
         // sizing
         p.full_content_size = prev_max_pos - prev_content_start;
-        p.full_size =
-            prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
+        p.full_size = prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
 
         // TODO[NOTE]: is it possible to get size from only 1 frame?
         // or configurable
@@ -1327,10 +1534,6 @@ impl Context {
 
         assert!(id == self.current_panel_stack.pop().unwrap());
         self.current_panel_id = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
-    }
-
-    pub fn end(&mut self) {
-        self.end_assert(None)
     }
 
     pub fn get_item_signal(&self, id: Id, bb: Rect) -> Signal {
@@ -1756,7 +1959,9 @@ impl Context {
         let mut stack = vec![panel_id];
         let mut group_set = HashSet::new();
         while let Some(id) = stack.pop() {
-            if !group_set.insert(id) { continue; }
+            if !group_set.insert(id) {
+                continue;
+            }
             // push children for DFS
             for &c in &self.panels[id].children {
                 stack.push(c);
@@ -1806,13 +2011,6 @@ impl Context {
         }
     }
 
-
-
-
-
-
-
-
     // pub fn bring_panel_to_front(&mut self, panel_id: Id) {
     //     assert_eq!(self.panels.len(), self.draw_order.len());
 
@@ -1842,8 +2040,8 @@ impl Context {
 
     pub fn begin_child(&mut self, name: &str) {
         let id = self.gen_id(name);
-        let panel_flags = 
-            PanelFlags::NO_TITLEBAR
+        let panel_flags = PanelFlags::NO_TITLEBAR
+            | PanelFlags::NO_DOCKING
             | PanelFlags::USE_PARENT_DRAWLIST
             | PanelFlags::DRAW_V_SCROLLBAR
             | PanelFlags::USE_PARENT_CLIP
@@ -1909,7 +2107,6 @@ impl Context {
             // self.window_panel_titlebar_height = self.style.titlebar_height();
         }
 
-        
         self.window_panel_id = self.gen_id("##_WINDOW_PANEL");
         self.begin_ex("##_WINDOW_PANEL", flags);
         assert!(self.window_panel_id == self.current_panel_id);
@@ -2082,7 +2279,6 @@ impl Context {
             self.checkbox("clip content", &mut tmp);
             self.clip_content = tmp;
 
-
             let mut tmp = self.draw_clip_rect;
             self.checkbox("draw clip rect", &mut tmp);
             self.draw_clip_rect = tmp;
@@ -2139,7 +2335,7 @@ impl Context {
 
             // set panel id
             self.active_panel_id = self.hot_panel_id;
-            if !self.hot_panel_id.is_null() { 
+            if !self.hot_panel_id.is_null() {
                 self.active_panel_id = self.panels[self.hot_panel_id].root;
             }
 
@@ -2403,6 +2599,9 @@ impl Context {
     }
 }
 
+// BEGIN TYPES
+//---------------------------------------------------------------------------------------
+
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub name: String,
@@ -2641,9 +2840,10 @@ impl Panel {
         Vec2::new(x, y)
     }
 
-
     fn scrolling_past_bounds(&self, delta: Vec2) -> bool {
-        let scroll = (self.scroll + delta).min(self.scroll_max()).max(self.scroll_min());
+        let scroll = (self.scroll + delta)
+            .min(self.scroll_max())
+            .max(self.scroll_min());
 
         scroll == self.scroll
     }
@@ -2791,6 +2991,14 @@ impl Panel {
         max.round()
     }
 
+    pub fn titlebar_rect(&self) -> Rect {
+        if self.flags.has(PanelFlags::NO_TITLEBAR) {
+            return Rect::ZERO
+        } else {
+            Rect::from_min_size(self.pos, Vec2::new(self.size.x, self.titlebar_height))
+        }
+    }
+
     pub fn content_end_pos(&self) -> Vec2 {
         let pos = self._cursor.borrow().content_start_pos + self.full_content_size; // + self.scroll; // + self.scroll + self.full_content_size
         pos.round()
@@ -2827,8 +3035,34 @@ impl Panel {
     }
 }
 
-// BEGIN TYPES
-//---------------------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Axis {
+    X = 0,
+    Y = 1,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DockNodeKind {
+    Split {
+        children: Box<[DockNode; 2]>,
+        axis: Axis,
+        ratio: f32,
+    },
+    Leaf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockNode {
+    pub kind: DockNodeKind,
+    pub rect: Rect,
+    pub panel: Id,
+}
+
+#[derive(Debug, Clone)]
+pub struct DockTree {
+    pub nodes: IdMap<DockNode>,
+    pub roots: Vec<DockNode>,
+}
 
 id_type!(Id);
 id_type!(TextureId);
@@ -3088,6 +3322,7 @@ pub enum PanelAction {
     Move {
         start_pos: Vec2,
         id: Id,
+        dock_target: Id,
     },
     Scroll {
         axis: usize,
@@ -3105,7 +3340,11 @@ impl fmt::Display for PanelAction {
             Self::Resize { dir, id, prev_rect } => {
                 write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}")
             }
-            Self::Move { start_pos, id } => write!(f, "MOVE {{ {id}, {start_pos} }}"),
+            Self::Move {
+                start_pos,
+                id,
+                dock_target,
+            } => write!(f, "MOVE {{ {id}, {start_pos}, {dock_target} }}"),
             Self::Scroll {
                 start_scroll: start_offset,
                 id,
@@ -3749,6 +3988,7 @@ macros::flags!(PanelFlags:
     ONLY_MOVE_FROM_TITLEBAR,
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
+    NO_DOCKING,
     DONT_KEEP_SCROLLBAR_PAD,
     DONT_CLIP_CONTENT,
 
@@ -5582,7 +5822,6 @@ impl GlyphCache {
             .allocate(etagere::Size::new(w as i32, h as i32))
             .unwrap();
 
-
         let r = alloc.rectangle;
 
         let min = Vec2::new(r.min.x as f32, r.min.y as f32);
@@ -5816,7 +6055,6 @@ impl RenderPassHandle for MergedDrawLists {
             let clip_min = clip.min.as_uvec2().max(UVec2::ZERO).min(target_size);
             let clip_max = clip.max.as_uvec2().max(clip_min).min(target_size);
             let clip_size = clip_max - clip_min;
-
 
             // let clip_min = clip.min.as_uvec2().clamp(Vec2::ZERO, target_size);
             // let clip_size = clip.size().as_uvec2().clamp(Vec2::ZERO, target_size);
