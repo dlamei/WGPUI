@@ -8,11 +8,7 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Vertex as VertexTyp,
-    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
-    mouse::{Clipboard, CursorIcon, MouseBtn, MouseState},
-    rect::Rect,
+    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, HashSet, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, Vertex as VertexTyp
 };
 
 // TODO[NOTE]: framepadding style?
@@ -127,12 +123,14 @@ pub struct Context {
     // this flag signals that the current mouse press should be handled as a drag
     pub expect_drag: bool,
 
-    pub draw_wireframe: bool,
     pub clip_content: bool,
+    pub draw_wireframe: bool,
     pub draw_clip_rect: bool,
     pub draw_content_outline: bool,
     pub draw_full_content_outline: bool,
     pub draw_item_outline: bool,
+    pub draw_position_bounds: bool,
+
     pub circle_max_err: f32,
 
     pub frame_count: u64,
@@ -213,6 +211,7 @@ impl Context {
             draw_content_outline: false,
             draw_full_content_outline: false,
             draw_item_outline: false,
+            draw_position_bounds: false,
             circle_max_err: 0.3,
 
             frame_count: 0,
@@ -347,12 +346,29 @@ impl Context {
     // in a scroll upwards
     // TODO[NOTE]: we need acceleration (or maybe smoothing) when scrolling. or momentum
     pub fn set_mouse_scroll(&mut self, delta: Vec2) {
-        if !self.hot_panel_id.is_null() {
-            self.panels[self.hot_panel_id].move_scroll(delta * self.scroll_speed);
+        let delta = delta * self.scroll_speed;
+        let mut target = if !self.hot_panel_id.is_null() {
+            &mut self.panels[self.hot_panel_id]
+            // self.panels[self.hot_panel_id].move_scroll(delta * self.scroll_speed);
         } else if !self.active_panel_id.is_null() {
-            self.panels[self.active_panel_id].move_scroll(delta * self.scroll_speed);
+            &mut self.panels[self.active_panel_id]
+            // &mut self.panels[self.active_id]
+            // self.panels[self.active_panel_id].move_scroll(delta * self.scroll_speed);
             // self.panels[self.active_panel_id].scroll += delta * self.scroll_speed;
+        } else {
+            return
+        };
+
+        // println!("{}", target.scrolling_past_bounds(delta));
+
+        let mut parent = target.parent_id;
+        if target.scrolling_past_bounds(delta) && !parent.is_null() {
+            target = &mut self.panels[parent];
+            parent = target.parent_id;
         }
+
+        target.set_scroll(delta);
+
     }
 
     pub fn set_mouse_press(&mut self, btn: MouseBtn, press: bool) {
@@ -493,15 +509,18 @@ impl Context {
             newly_created = true;
         }
 
-        // setup child / parent ids
 
         // clear panels children every frame 
         self.panels[id].children.clear();
+        
+        // setup child / parent ids
         let (root_id, parent_id) = if flags.has(PanelFlags::IS_CHILD) {
             let parent_id = self.current_panel_id;
             let parent = &mut self.panels[parent_id];
+            let root = parent.root;
             parent.children.push(id);
-            (parent.root, parent_id)
+
+            (root, parent_id)
         } else {
             (id, Id::NULL)
         };
@@ -552,6 +571,8 @@ impl Context {
         p.root = root_id;
         p.parent_id = parent_id;
 
+        let is_window = id == self.window_panel_id;
+
         assert!(p.id == id);
         // TODO[CHECK]:
         p.push_id(p.id);
@@ -559,7 +580,7 @@ impl Context {
         p.explicit_size = self.next.size;
         p.drawlist.data.borrow_mut().circle_max_err = self.circle_max_err;
         p.drawlist.draw_clip_rect = self.draw_clip_rect;
-        p.titlebar_height = if id == self.window_panel_id {
+        p.titlebar_height = if is_window {
             self.style.window_titlebar_height()
         } else {
             self.style.titlebar_height()
@@ -591,26 +612,49 @@ impl Context {
             p.titlebar_height = 0.0;
         }
 
+        self.next.reset();
         // if !p.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
         //     p.nav_root = p.move_id;
         // } else {
         //     p.nav_root = p.root;
         // }
 
-        if p.id != self.window_panel_id {
-            let height = p.titlebar_height;
+        let (pos_bounds, clam_pos_bounds) = if flags.has(PanelFlags::IS_CHILD) {
+            let p = &self.panels[parent_id];
+            (p.full_content_rect().translate(p.scroll), true)
+        } else {
+            let bounds = if is_window {
+                // p.visible_content_rect()
+                p.visible_content_rect().expand(p.padding)
+            } else {
+                let p = &self.panels[self.window_panel_id];
+                p.visible_content_rect().expand(p.padding)
+            };
+            (bounds, false)
+        };
+
+        let p = &mut self.panels[id];
+        p.position_bounds = pos_bounds;
+        p.clamp_position_to_bounds = clam_pos_bounds;
+
+        if !is_window {
+            let tb_height = p.titlebar_height;
             // p.pos.y = p.pos.y.max(height);
             let screen = self.draw.screen_size;
-            // p.pos.x = p.pos.x.min(screen.x - height);
-            p.pos.x = p.pos.x.max(-p.size.x + height).min(screen.x - height);
+
+            let thr = self.resize_threshold;
+            // p.pos.x = p.pos.x.max(pos_bounds.left() - p.size.x + thr).min(pos_bounds.top() - tb_height);
+            // p.pos.x = p.pos.x.max(-p.size.x + tb_height).min(screen.x - tb_height);
+            p.pos.x = p.pos.x.max(-p.size.x + pos_bounds.left() + tb_height).min(pos_bounds.right() - tb_height);
             p.pos.y = p
                 .pos
                 .y
-                .max(self.style.window_titlebar_height())
-                .min(screen.y - height);
+                // .max(self.style.window_titlebar_height())
+                .max(pos_bounds.top())
+                .min(pos_bounds.bottom() - tb_height);
+                // .min(screen.y - tb_height);
         }
 
-        self.next.reset();
 
         let p = &mut self.panels[id];
 
@@ -665,6 +709,8 @@ impl Context {
         p.clip_rect = clip_rect;
 
 
+
+
         let p = &self.panels[id];
         // let panel_rect = p.panel_rect();
 
@@ -680,9 +726,16 @@ impl Context {
         }
 
 
+
         // TODO[NOTE]: include outline width in panel size
         // draw panel
-        let is_window_panel = p.is_window_panel;
+
+        if self.draw_position_bounds {
+            let bounds = p.position_bounds;
+            self.push_clip_rect(bounds);
+            self.draw_over(bounds.draw_rect().outline(Outline::new(RGBA::GREEN, 2.0)));
+            self.pop_clip_rect();
+        }
 
         // draw background
         let bg_fill = if p.is_window_panel {
@@ -999,7 +1052,7 @@ impl Context {
                 RGBA::WHITE
             };
 
-            let x_icon = self.layout_icon(PhosphorFont::X, self.style.text_size());
+            let x_icon = self.layout_icon(phosphor_font::X, self.style.text_size());
             let pad = btn_size - x_icon.size();
             let pos = btn_pos + pad / 2.0;
             self.draw(x_icon.draw_rects(pos, color));
@@ -1024,9 +1077,9 @@ impl Context {
 
             {
                 let max_icon = if self.window.is_maximized() {
-                    self.layout_icon(PhosphorFont::MAXIMIZE_OFF, self.style.text_size())
+                    self.layout_icon(phosphor_font::MAXIMIZE_OFF, self.style.text_size())
                 } else {
-                    self.layout_icon(PhosphorFont::MAXIMIZE, self.style.text_size())
+                    self.layout_icon(phosphor_font::MAXIMIZE, self.style.text_size())
                 };
                 let pad = btn_size - max_icon.size();
                 let pos = btn_pos + pad / 2.0;
@@ -1049,7 +1102,7 @@ impl Context {
                 self.style.text_col()
             };
 
-            let min_icon = self.layout_icon(PhosphorFont::MINIMIZE, self.style.text_size());
+            let min_icon = self.layout_icon(phosphor_font::MINIMIZE, self.style.text_size());
             let pad = btn_size - min_icon.size();
             let pos = btn_pos + pad / 2.0;
             self.draw(min_icon.draw_rects(pos, color));
@@ -1676,33 +1729,98 @@ impl Context {
     pub fn bring_panel_to_front(&mut self, panel_id: Id) {
         assert_eq!(self.panels.len(), self.draw_order.len());
 
-        let root_id = {
-            let p = &self.panels[panel_id];
-            p.root
-        };
+        // gather the panel and all of its descendants (children, grandchildren, ...)
+        let mut stack = vec![panel_id];
+        let mut group_set = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !group_set.insert(id) { continue; }
+            // push children for DFS
+            for &c in &self.panels[id].children {
+                stack.push(c);
+            }
+        }
 
-        let curr_order = self.panels[root_id].draw_order;
-        assert!(self.draw_order[curr_order] == root_id);
-
-        let new_order = self.draw_order.len() - 1;
-        if self.draw_order[new_order] == root_id {
+        if group_set.is_empty() {
             return;
         }
 
-        for i in curr_order..new_order {
-            let moved = self.draw_order[i + 1];
-            self.draw_order[i] = moved;
-            self.panels[moved].draw_order = i;
-            assert_eq!(self.panels[moved].draw_order, i);
+        // preserve relative ordering as they appear in draw_order
+        let group_in_draw_order: Vec<Id> = self
+            .draw_order
+            .iter()
+            .cloned()
+            .filter(|id| group_set.contains(id))
+            .collect();
+
+        if group_in_draw_order.is_empty() {
+            return;
         }
 
-        self.draw_order[new_order] = root_id;
-        self.panels[root_id].draw_order = new_order;
+        // if the group is already at the very top in the same order, nothing to do
+        let group_len = group_in_draw_order.len();
+        if group_len > 0 {
+            let tail_slice = &self.draw_order[self.draw_order.len() - group_len..];
+            if tail_slice == group_in_draw_order.as_slice() {
+                return;
+            }
+        }
+
+        // build new draw order: all panels except group (preserving their order), then append group in their original relative order
+        let mut new_draw_order: Vec<Id> = self
+            .draw_order
+            .iter()
+            .cloned()
+            .filter(|id| !group_set.contains(id))
+            .collect();
+
+        new_draw_order.extend(group_in_draw_order.iter().cloned());
+
+        // write back and update per-panel draw_order indices
+        self.draw_order = new_draw_order;
+        for (i, &id) in self.draw_order.iter().enumerate() {
+            self.panels[id].draw_order = i;
+            assert_eq!(self.panels[id].draw_order, i);
+        }
     }
+
+
+
+
+
+
+
+
+    // pub fn bring_panel_to_front(&mut self, panel_id: Id) {
+    //     assert_eq!(self.panels.len(), self.draw_order.len());
+
+    //     let root_id = {
+    //         let p = &self.panels[panel_id];
+    //         p.root
+    //     };
+
+    //     let curr_order = self.panels[root_id].draw_order;
+    //     assert!(self.draw_order[curr_order] == root_id);
+
+    //     let new_order = self.draw_order.len() - 1;
+    //     if self.draw_order[new_order] == root_id {
+    //         return;
+    //     }
+
+    //     for i in curr_order..new_order {
+    //         let moved = self.draw_order[i + 1];
+    //         self.draw_order[i] = moved;
+    //         self.panels[moved].draw_order = i;
+    //         assert_eq!(self.panels[moved].draw_order, i);
+    //     }
+
+    //     self.draw_order[new_order] = root_id;
+    //     self.panels[root_id].draw_order = new_order;
+    // }
 
     pub fn begin_child(&mut self, name: &str) {
         let id = self.gen_id(name);
-        let panel_flags = PanelFlags::NO_TITLEBAR
+        let panel_flags = 
+            PanelFlags::NO_TITLEBAR
             | PanelFlags::USE_PARENT_DRAWLIST
             | PanelFlags::DRAW_V_SCROLLBAR
             | PanelFlags::USE_PARENT_CLIP
@@ -1768,8 +1886,10 @@ impl Context {
             // self.window_panel_titlebar_height = self.style.titlebar_height();
         }
 
+        
+        self.window_panel_id = self.gen_id("##_WINDOW_PANEL");
         self.begin_ex("##_WINDOW_PANEL", flags);
-        self.window_panel_id = self.current_panel_id;
+        assert!(self.window_panel_id == self.current_panel_id);
 
         // }
 
@@ -1939,9 +2059,14 @@ impl Context {
             self.checkbox("clip content", &mut tmp);
             self.clip_content = tmp;
 
+
             let mut tmp = self.draw_clip_rect;
             self.checkbox("draw clip rect", &mut tmp);
             self.draw_clip_rect = tmp;
+
+            let mut tmp = self.draw_position_bounds;
+            self.checkbox("draw position bounds", &mut tmp);
+            self.draw_position_bounds = tmp;
 
             let mut tmp = self.draw_content_outline;
             self.checkbox("draw content outline", &mut tmp);
@@ -1985,10 +2110,15 @@ impl Context {
                 self.active_id = panel.root;
 
                 if !panel.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
-                    self.active_id = panel.move_id;
+                    self.active_id = self.panels[self.active_id].move_id;
                 }
             }
+
+            // set panel id
             self.active_panel_id = self.hot_panel_id;
+            if !self.hot_panel_id.is_null() { 
+                self.active_panel_id = self.panels[self.hot_panel_id].root;
+            }
 
             // if prev != self.active_id {
             //     self.active_id_changed = true;
@@ -2288,6 +2418,13 @@ pub struct Panel {
     pub full_rect: Rect,
     pub clip_rect: Rect,
 
+    pub position_bounds: Rect,
+    /// determines how the panels position is constraint
+    ///
+    /// true => panel cannot exit bounds \
+    /// false => panel cannot fully exit bounds
+    pub clamp_position_to_bounds: bool,
+
     // TODO[CHECK]: currently only used when placing the items. i.e. cursor position is not offset
     // by scroll, scroll is only added when generating the item rectangle
     pub scroll: Vec2,
@@ -2369,6 +2506,10 @@ impl Panel {
             full_size: Vec2::ZERO,
             full_rect: Rect::ZERO,
             clip_rect: Rect::ZERO,
+
+            position_bounds: Rect::ZERO,
+            clamp_position_to_bounds: false,
+
             explicit_size: Vec2::NAN,
             outline_offset: 0.0,
             draw_order: 0,
@@ -2477,6 +2618,13 @@ impl Panel {
         Vec2::new(x, y)
     }
 
+
+    fn scrolling_past_bounds(&self, delta: Vec2) -> bool {
+        let scroll = (self.scroll + delta).min(self.scroll_max()).max(self.scroll_min());
+
+        scroll == self.scroll
+    }
+
     // Replace scroll_max() with:
     pub fn scroll_max(&self) -> Vec2 {
         Vec2::ZERO
@@ -2533,7 +2681,8 @@ impl Panel {
     //     self.next_scroll = scroll.min(max).max(min);
     // }
 
-    pub fn move_scroll(&mut self, delta: Vec2) {
+    pub fn set_scroll(&mut self, delta: Vec2) {
+        // self.next_scroll = self.scroll + delta;
         self.next_scroll = self.scroll + delta;
         // self.set_scroll(self.scroll + delta);
     }
@@ -3572,6 +3721,8 @@ macros::flags!(PanelFlags:
     NO_FOCUS,
     NO_MOVE,
     NO_RESIZE,
+    // TODO[NOTE]: what / when / how to use
+    NO_INPUT,
     ONLY_MOVE_FROM_TITLEBAR,
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
@@ -5158,17 +5309,6 @@ pub struct FontTable {
     pub sys: Rc<RefCell<ctext::FontSystem>>,
 }
 
-pub struct GlyphCache {
-    pub texture: gpu::Texture,
-    pub alloc: etagere::AtlasAllocator,
-    pub min_alloc_uv: Vec2,
-    pub max_alloc_uv: Vec2,
-    pub size: u32,
-    pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
-    pub swash_cache: ctext::SwashCache,
-    pub fonts: FontTable,
-}
-
 impl FontTable {
     pub fn new() -> Self {
         Self {
@@ -5349,6 +5489,19 @@ impl TextItem {
     }
 }
 
+pub struct GlyphCache {
+    pub texture: gpu::Texture,
+    pub alloc: etagere::AtlasAllocator,
+    pub min_alloc_uv: Vec2,
+    pub max_alloc_uv: Vec2,
+    pub size: u32,
+    pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
+    pub swash_cache: ctext::SwashCache,
+    pub fonts: FontTable,
+}
+
+// TODO[NOTE]: dealloc with garbage collector
+
 impl GlyphCache {
     pub fn new(wgpu: &WGPU, fonts: FontTable) -> Self {
         const SIZE: u32 = 1024;
@@ -5401,11 +5554,13 @@ impl GlyphCache {
         // TODO[CHECK]: account for roundoff error?
         w += 1;
         h += 1;
-        let r = self
+        let alloc = self
             .alloc
             .allocate(etagere::Size::new(w as i32, h as i32))
-            .unwrap()
-            .rectangle;
+            .unwrap();
+
+
+        let r = alloc.rectangle;
 
         let min = Vec2::new(r.min.x as f32, r.min.y as f32);
         let max = Vec2::new(r.max.x as f32, r.max.y as f32);
@@ -5500,7 +5655,7 @@ impl GlyphCache {
     }
 }
 
-pub mod PhosphorFont {
+pub mod phosphor_font {
     // from https://phosphoricons.com/
     pub const X: &'static str = "\u{E4F6}";
     pub const MAXIMIZE_OFF: &'static str = "\u{E0F8}";

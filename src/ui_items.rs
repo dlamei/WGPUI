@@ -277,9 +277,9 @@ impl ui::Context {
         let text_dim = text_shape.size();
 
         let icon = if *open {
-            ui::PhosphorFont::CARET_DOWN
+            ui::phosphor_font::CARET_DOWN
         } else {
-            ui::PhosphorFont::CARET_RIGHT
+            ui::phosphor_font::CARET_RIGHT
         };
         let icon_shape = self.layout_icon(icon, self.style.text_size());
         let icon_dim = text_shape.size();
