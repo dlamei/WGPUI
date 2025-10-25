@@ -64,6 +64,8 @@ fn dark_theme() -> StyleTable {
     })
 }
 
+
+
 pub struct Context {
     // pub panels: HashMap<Id, Panel>,
     pub panels: IdMap<Panel>,
@@ -663,7 +665,7 @@ impl Context {
 
         p.init_content_cursor(p.visible_content_start_pos());
 
-        let outline = if p.id == self.prev_hot_panel_id {
+        let outline = if p.id == self.prev_hot_panel_id || p.id == self.active_panel_id {
             self.style.panel_hover_outline()
         } else {
             self.style.panel_outline()
@@ -672,18 +674,18 @@ impl Context {
         // preserve when?
         p.outline_offset = outline.offset();
 
-        p.full_content_size = prev_max_pos - prev_content_start;
+        // p.full_content_size = prev_max_pos - prev_content_start;
 
-        p.full_size =
-            prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
+        // p.full_size =
+        //     prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
 
-        // TODO[NOTE]: is it possible to get size from only 1 frame?
-        // or configurable
-        if self.frame_count - p.frame_created <= 2 {
-            // p.size = p.full_size * 1.1;
-            // TODO[NOTE]: account for scrollbar width?
-            p.size = p.full_size + p.padding + self.style.scrollbar_padding();
-        }
+        // // TODO[NOTE]: is it possible to get size from only 1 frame?
+        // // or configurable
+        // if self.frame_count - p.frame_created <= 2 {
+        //     // p.size = p.full_size * 1.1;
+        //     // TODO[NOTE]: account for scrollbar width?
+        //     p.size = p.full_size + p.padding + self.style.scrollbar_padding();
+        // }
 
         let panel_pos = p.pos;
 
@@ -1277,6 +1279,7 @@ impl Context {
 
     pub fn end_assert(&mut self, name: Option<&str>) {
         let p = self.get_current_panel();
+        let id = p.id;
         if let Some(name) = name {
             assert!(name == &p.name);
         }
@@ -1284,7 +1287,7 @@ impl Context {
         let p = self.get_current_panel();
         let p_pad = p.padding;
         // p.id_stack.pop().unwrap();
-        p.pop_id();
+        assert!(id == p.pop_id());
         if !p.id_stack_ref().is_empty() {
             log::warn!("non empty id stack at ");
         }
@@ -1302,7 +1305,27 @@ impl Context {
         //     list.pop_clip_rect();
         // });
 
-        self.current_panel_stack.pop();
+        let p = &mut self.panels[id];
+
+        let prev_max_pos = p.cursor_max_pos();
+        let prev_content_start = p.content_start_pos();
+
+        p.init_content_cursor(p.visible_content_start_pos());
+
+        // sizing
+        p.full_content_size = prev_max_pos - prev_content_start;
+        p.full_size =
+            prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
+
+        // TODO[NOTE]: is it possible to get size from only 1 frame?
+        // or configurable
+        if self.frame_count - p.frame_created <= 2 {
+            // p.size = p.full_size * 1.1;
+            // TODO[NOTE]: account for scrollbar width?
+            p.size = p.full_size + p.padding + self.style.scrollbar_padding();
+        }
+
+        assert!(id == self.current_panel_stack.pop().unwrap());
         self.current_panel_id = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
     }
 
@@ -1845,8 +1868,8 @@ impl Context {
 
     pub fn end_child(&mut self) {
         let child_id = self.current_panel_id;
-        let size = self.panels[child_id].size;
         self.end();
+        let size = self.panels[child_id].size;
 
         let parent = self.current_panel_id;
         assert!(self.panels[parent].child_id == child_id);
