@@ -15,6 +15,22 @@ pub type Instant = std::time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 pub type Duration = std::time::Duration;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Axis {
+    X = 0,
+    Y = 1,
+}
+
+impl Axis {
+    pub fn flip(self) -> Self {
+        match self {
+            Axis::X => Axis::Y,
+            Axis::Y => Axis::X,
+        }
+    }
+}
+
+/// very basic random function
 pub const fn rand_f32() -> f32 {
     static mut SEED: u32 = 123456789;
     unsafe {
@@ -859,6 +875,13 @@ macro_rules! id_type {
 
         impl $id_ty {
             pub const NULL: $id_ty = $id_ty(0);
+
+            pub fn from_hash(h: &impl std::hash::Hash) -> Self {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = ahash::AHasher::default();
+                h.hash(&mut hasher);
+                Self(hasher.finish())
+            }
 
             pub fn is_null(&self) -> bool {
                 self.0 == 0

@@ -9,7 +9,9 @@ use wgpu::util::DeviceExt;
 
 use crate::{
     Vertex as VertexTyp,
-    core::{ArrVec, DataMap, Dir, HashMap, HashSet, Instant, RGBA, id_type, stacked_fields_struct},
+    core::{
+        ArrVec, Axis, DataMap, Dir, HashMap, HashSet, Instant, RGBA, id_type, stacked_fields_struct,
+    },
     gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
     mouse::{Clipboard, CursorIcon, MouseBtn, MouseState},
     rect::Rect,
@@ -72,6 +74,7 @@ pub struct Context {
     // pub panels: HashMap<Id, Panel>,
     pub panels: IdMap<Panel>,
     pub widget_data: DataMap<Id>,
+    pub dock_tree: DockTree,
     // pub style: Style,
     pub style: StyleTable,
 
@@ -179,6 +182,7 @@ impl Context {
         Self {
             panels: IdMap::new(),
             widget_data: DataMap::new(),
+            dock_tree: DockTree::new(),
             // style: Style::dark(),
             style: dark_theme(),
             draw: MergedDrawLists::new(glyph_cache.texture.clone(), wgpu),
@@ -346,7 +350,7 @@ impl Context {
         }
     }
 
-    // TODO[BUG]: scrolling on mousepad with two fingers and one finger leaves the mousepad results
+    // TODO[BUG]: scrolling on mousepad with two fingers upwards and one finger leaves the mousepad results
     // in a scroll upwards
     // TODO[NOTE]: we need acceleration (or maybe smoothing) when scrolling. or momentum
     pub fn set_mouse_scroll(&mut self, delta: Vec2) {
@@ -382,7 +386,7 @@ impl Context {
 
         let mut resize_dir = None;
         if !self.window.is_maximized() {
-            resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+            resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold * 1.5);
         }
 
         let lft_btn = btn == MouseBtn::Left;
@@ -407,7 +411,8 @@ impl Context {
 
         let w_size = self.window.window_size();
         let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
-        let resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold);
+
+        let resize_dir = is_in_resize_region(w_rect, self.mouse.pos, self.resize_threshold * 1.5);
 
         if resize_dir.is_none() && self.cursor_icon.is_resize() {
             self.set_cursor_icon(CursorIcon::Default);
@@ -699,6 +704,13 @@ impl Context {
 
         p.size = panel_size.min(p.max_panel_size()).max(p.min_panel_size());
 
+        if !p.dock_id.is_null() {
+            // override pos and size if docked
+            let dock_rect = self.dock_tree.nodes[p.dock_id].rect;
+            p.pos = dock_rect.min;
+            p.size = dock_rect.size();
+        }
+
         let outline_width = self.style.panel_outline().width;
         let full_rect = Rect::from_min_size(p.pos - outline_width, p.size + 2.0 * outline_width);
         let mut clip_rect = p.full_rect;
@@ -729,7 +741,10 @@ impl Context {
             id, dock_target, ..
         } = &mut self.panel_action
         {
-            if p.clip_rect.contains(self.mouse.pos) && self.panels[*id].titlebar_rect().contains(self.mouse.pos) && !self.modifiers.shift_key() {
+            if p.clip_rect.contains(self.mouse.pos)
+                && self.panels[*id].titlebar_rect().contains(self.mouse.pos)
+                && !self.modifiers.shift_key()
+            {
                 let curr_draw_order = p.draw_order;
                 let moving_draw_order = self.panels[*id].draw_order;
                 let dock_target_draw_order = if !dock_target.is_null() {
@@ -746,7 +761,6 @@ impl Context {
                     *dock_target = p.id;
                 }
             }
-
         }
 
         // let p = &self.panels[id];
@@ -1019,13 +1033,10 @@ impl Context {
         let title_text = self.layout_text(&title, self.style.text_size());
         let pad = (titlebar_height - title_text.height) / 2.0;
         self.draw(
-            Rect::from_min_size(
-                panel_pos,
-                Vec2::new(panel_size.x, titlebar_height),
-            )
-            .draw_rect()
-            .fill(self.style.titlebar_color())
-            .corners(CornerRadii::top(self.style.panel_corner_radius())),
+            Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height))
+                .draw_rect()
+                .fill(self.style.titlebar_color())
+                .corners(CornerRadii::top(self.style.panel_corner_radius())),
         )
         .draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
         // self.draw(|list| {
@@ -1320,6 +1331,109 @@ impl Context {
         preview
     }
 
+    pub fn compute_dock_split_ratio(mouse: Vec2, dock_target: Rect) -> (Axis, f32) {
+        let mut delta = (mouse - dock_target.center()) / dock_target.size() * 2.0;
+        delta.x = delta.x.clamp(-1.0, 1.0);
+        delta.y = delta.y.clamp(-1.0, 1.0);
+
+        let use_horizontal = delta.x.abs() >= delta.y.abs();
+        let ratio = if use_horizontal {
+            if delta.x >= 0.0 {
+                0.5 + 0.5 * delta.x
+            } else {
+                0.5 * (1.0 + delta.x)
+            }
+        } else {
+            if delta.y >= 0.0 {
+                0.5 + 0.5 * delta.y
+            } else {
+                0.5 * (1.0 + delta.y)
+            }
+        };
+
+        let ratio = ratio.clamp(0.0, 1.0);
+        let axis = if use_horizontal { Axis::X } else { Axis::Y };
+        (axis, ratio)
+    }
+
+    pub fn compute_dock_split(mouse: Vec2, dock_target: Rect) -> (Rect, Rect) {
+        let mut preview = dock_target;
+        let mut delta = (mouse - preview.center()) / preview.size() * 2.0;
+        delta.x = delta.x.clamp(-1.0, 1.0);
+        delta.y = delta.y.clamp(-1.0, 1.0);
+
+        let use_horizontal = delta.x.abs() >= delta.y.abs();
+        let min_px = 8.0_f32;
+        let mut other = dock_target;
+
+        if use_horizontal {
+            let right = if delta.x >= 0.0 {
+                preview.right()
+            } else {
+                preview.left() + (delta.x + 1.0) * preview.width()
+            };
+
+            let left = if delta.x <= 0.0 {
+                preview.left()
+            } else {
+                preview.right() - (1.0 - delta.x) * preview.width()
+            };
+
+            let left = left.clamp(preview.left(), preview.right() - min_px);
+            let right = right.clamp(preview.left() + min_px, preview.right());
+
+            preview.set_left(left);
+            preview.set_right(right);
+
+            if delta.x >= 0.0 {
+                other.set_left(dock_target.left());
+                other.set_right(preview.left());
+                let right_clamped = other.right().clamp(other.left() + min_px, dock_target.right());
+                other.set_right(right_clamped);
+            } else {
+                other.set_left(preview.right());
+                other.set_right(dock_target.right());
+                let left_clamped = other.left().clamp(dock_target.left(), other.right() - min_px);
+                other.set_left(left_clamped);
+            }
+        } else {
+            let bottom = if delta.y >= 0.0 {
+                preview.bottom()
+            } else {
+                preview.top() + (delta.y + 1.0) * preview.height()
+            };
+
+            let top = if delta.y <= 0.0 {
+                preview.top()
+            } else {
+                preview.bottom() - (1.0 - delta.y) * preview.height()
+            };
+
+            let top = top.clamp(preview.top(), preview.bottom() - min_px);
+            let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
+
+            preview.set_top(top);
+            preview.set_bottom(bottom);
+
+            if delta.y >= 0.0 {
+                other.set_top(dock_target.top());
+                other.set_bottom(preview.top());
+                let bottom_clamped = other.bottom().clamp(other.top() + min_px, dock_target.bottom());
+                other.set_bottom(bottom_clamped);
+            } else {
+                other.set_top(preview.bottom());
+                other.set_bottom(dock_target.bottom());
+                let top_clamped = other.top().clamp(dock_target.top(), other.bottom() - min_px);
+                other.set_top(top_clamped);
+            }
+        }
+
+        (preview, other)
+    }
+
+
+
+
     pub fn update_panel_move(&mut self) {
         // TODO[BUG]: after drag quickly drag over another panel make the wrong panel move
         // probably because of prev_active_panel_id and not current id
@@ -1336,16 +1450,53 @@ impl Context {
                     }
                 }
 
-                if let PanelAction::Move { id, dock_target, .. } = self.panel_action {
-                    if !self.mouse.dragging(MouseBtn::Left) {
-
+                if let PanelAction::Move {
+                    id, dock_target, ..
+                } = self.panel_action
+                {
+                    // dragged panel dropped potentially docking
+                    if self.mouse.released(MouseBtn::Left) {
                         if !dock_target.is_null() {
-                            let dock_target_panel = &mut self.panels[dock_target];
-                            let preview = Self::compute_dock_preview(self.mouse.pos, dock_target_panel.visible_content_rect());
+                            if !self.panels[id].dock_id.is_null() {
+                                log::warn!("docking with panel that is already docked");
+                            }
 
-                            let p = &mut self.panels[id];
-                            p.pos = preview.min;
-                            p.size = preview.size();
+                            let target_panel = &mut self.panels[dock_target];
+
+                            if target_panel.dock_id.is_null() {
+                                let dock_id = self
+                                    .dock_tree
+                                    .add_root(target_panel.full_rect, target_panel.id);
+                                target_panel.dock_id = dock_id;
+                            }
+
+                            let (new_dock, target_dock) = Self::compute_dock_split(
+                                self.mouse.pos,
+                                target_panel.visible_content_rect(),
+                            );
+
+                            // let (axis, ratio) = Self::compute_dock_split_ratio(
+                            //     self.mouse.pos,
+                            //     target_panel.full_rect,
+                            // );
+
+                            let (axis, ratio) = if new_dock.width() != target_dock.width() {
+                                (Axis::X, new_dock.width() / (new_dock.width() + target_dock.width()))
+                            } else {
+                                (Axis::Y, new_dock.height() / (new_dock.height() + target_dock.height()))
+                            };
+
+                            let (l, r) =
+                                self.dock_tree
+                                    .split_node(target_panel.dock_id, ratio, axis);
+
+                            target_panel.dock_id = l;
+                            self.panels[id].dock_id = r;
+
+
+                            // let p = &mut self.panels[id];
+                            // p.pos = preview.min;
+                            // p.size = preview.size();
                         }
 
                         self.panel_action = PanelAction::None;
@@ -1357,7 +1508,8 @@ impl Context {
         // update dock target
         if let PanelAction::Move { dock_target, .. } = &mut self.panel_action {
             if !dock_target.is_null()
-                && (!self.panels[*dock_target].clip_rect.contains(self.mouse.pos) || self.modifiers.shift_key())
+                && (!self.panels[*dock_target].clip_rect.contains(self.mouse.pos)
+                    || self.modifiers.shift_key())
             {
                 *dock_target = Id::NULL
             }
@@ -1368,66 +1520,18 @@ impl Context {
                 let mut fill = self.style.btn_press();
                 fill.a = 0.3;
 
-                let preview = Self::compute_dock_preview(self.mouse.pos, dock_target_panel.visible_content_rect());
+                let preview = Self::compute_dock_preview(
+                    self.mouse.pos,
+                    dock_target_panel.visible_content_rect(),
+                );
 
-//                 // delta in [-1..1] across each axis
-//                 let mut delta = (self.mouse.pos - preview.center()) / preview.size() * 2.0;
-//                 delta.x = delta.x.clamp(-1.0, 1.0);
-//                 delta.y = delta.y.clamp(-1.0, 1.0);
-
-//                 // pick dominant axis (horizontal vs vertical split)
-//                 let use_horizontal = delta.x.abs() >= delta.y.abs();
-
-//                 // minimum preview size to avoid inversion
-//                 let min_px = 8.0_f32;
-
-//                 if use_horizontal {
-//                     // compute candidate left/right based on delta.x (negative -> grow from left, positive -> grow from right)
-//                     let right = if delta.x >= 0.0 {
-//                         preview.right()
-//                     } else {
-//                         preview.left() + (delta.x + 1.0) * preview.width()
-//                     };
-
-//                     let left = if delta.x <= 0.0 {
-//                         preview.left()
-//                     } else {
-//                         preview.right() - (1.0 - delta.x) * preview.width()
-//                     };
-
-//                     // clamp and ensure min width
-//                     let left = left.clamp(preview.left(), preview.right() - min_px);
-//                     let right = right.clamp(preview.left() + min_px, preview.right());
-
-//                     preview.set_left(left);
-//                     preview.set_right(right);
-//                 } else {
-//                     // vertical split: negative -> grow from top, positive -> grow from bottom
-//                     let bottom = if delta.y >= 0.0 {
-//                         preview.bottom()
-//                     } else {
-//                         preview.top() + (delta.y + 1.0) * preview.height()
-//                     };
-
-//                     let top = if delta.y <= 0.0 {
-//                         preview.top()
-//                     } else {
-//                         preview.bottom() - (1.0 - delta.y) * preview.height()
-//                     };
-
-//                     // clamp and ensure min height
-//                     let top = top.clamp(preview.top(), preview.bottom() - min_px);
-//                     let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
-
-//                     preview.set_top(top);
-//                     preview.set_bottom(bottom);
-//                 }
-
-                dock_target_panel
-                    .drawlist_over
-                    .add(preview.draw_rect().corners(self.style.panel_corner_radius()).fill(fill));
-                }
-
+                dock_target_panel.drawlist_over.add(
+                    preview
+                        .draw_rect()
+                        .corners(self.style.panel_corner_radius())
+                        .fill(fill),
+                );
+            }
 
             // if !dock_target.is_null() {
             //     let dock_target_panel = &mut self.panels[*dock_target];
@@ -2038,6 +2142,7 @@ impl Context {
     //     self.panels[root_id].draw_order = new_order;
     // }
 
+    // TODO[BUG]: panel with multiple children leads to crash
     pub fn begin_child(&mut self, name: &str) {
         let id = self.gen_id(name);
         let panel_flags = PanelFlags::NO_TITLEBAR
@@ -2099,7 +2204,7 @@ impl Context {
 
         // NO_MOVE because the window panel dragging is handled by the window,
         // not the panel
-        let mut flags = PanelFlags::NO_FOCUS | PanelFlags::NO_MOVE;
+        let mut flags = PanelFlags::NO_FOCUS | PanelFlags::NO_MOVE | PanelFlags::NO_DOCKING;
 
         if self.window.is_decorated() {
             flags |= PanelFlags::NO_TITLEBAR;
@@ -2119,6 +2224,33 @@ impl Context {
         root_panel.is_window_panel = true;
         if root_panel.close_pressed {
             self.close_pressed = true;
+        }
+
+
+        self.update_docktree();
+    }
+
+    pub fn update_docktree(&mut self) {
+        self.draw_over(
+            self.dock_tree
+                .nodes
+                .iter()
+                // .flat_map(|(_, n)| match &n.kind {
+                //     DockNodeKind::Split { children, .. } => children.as_slice(),
+                //     DockNodeKind::Leaf => std::slice::from_ref(n),
+                // })
+                .map(|(_, n)| n.rect.draw_rect().outline(Outline::new(RGBA::RED, 5.0))),
+        );
+
+        if self.prev_hot_panel_id.is_null() || self.panels[self.prev_hot_panel_id].dock_id.is_null() {
+            return
+        }
+
+        let hot_panel = &self.panels[self.prev_hot_panel_id];
+        let resize = is_in_resize_region(hot_panel.panel_rect(), self.mouse.pos, self.resize_threshold);
+
+        if !resize.is_none() && self.mouse.pressed(MouseBtn::Left) {
+            println!("{resize:?}");
         }
     }
 
@@ -2144,6 +2276,31 @@ impl Context {
         self.style.pop_var();
     }
 
+    pub fn panel_debug_info(&mut self, id: Id) {
+        use crate::ui_items::ui_text;
+
+        if id.is_null() {
+            ui_text!(self: "NONE");
+            return;
+        }
+
+        let p = &self.panels[id];
+        let name = p.name.clone();
+
+        let id = p.id;
+        let dock_id = p.dock_id;
+        let root = p.root;
+        let children = p.children.clone();
+        let draw_order = p.draw_order;
+
+        ui_text!(self: "name: {}", name);
+        ui_text!(self: "id: {}", id);
+        ui_text!(self: "dock_id: {}", dock_id);
+        ui_text!(self: "root_id: {}", root);
+        ui_text!(self: "children: {:?}", children);
+        ui_text!(self: "draw order: {}", draw_order);
+    }
+
     pub fn debug_window(&mut self) {
         use crate::ui_items::ui_text;
 
@@ -2156,15 +2313,14 @@ impl Context {
         let hot_name = self
             .get_panel_name_with_id(self.prev_hot_panel_id)
             .unwrap_or_default();
+
         let active_name = self
             .get_panel_name_with_id(self.active_panel_id)
             .unwrap_or_default();
-        // let tmp = self.style.text_size();
 
-        // self.style.text_size = 50.0;
-        // self.push_style(StyleVar::TextSize(30.0));
         ui_text!(self: "hot: {hot_name}");
         ui_text!(self: "active: {active_name}");
+
         ui_text!(self: "hot item: {}", self.prev_hot_id);
         ui_text!(self: "active item: {}", self.prev_active_id);
 
@@ -2271,6 +2427,13 @@ impl Context {
         }
 
         if self.tabitem("Debug") {
+            if self.button("reset docktree") {
+                for (_, p) in &mut self.panels {
+                    p.dock_id = Id::NULL;
+                }
+                self.dock_tree = DockTree::new();
+            }
+
             let mut tmp = self.draw_wireframe;
             self.checkbox("draw wireframe", &mut tmp);
             self.draw_wireframe = tmp;
@@ -2614,7 +2777,10 @@ pub struct Panel {
     // pub nav_root: Id,
     pub parent_id: Id,
     pub child_id: Id,
+    // TODO[NOTE]: not implemented yet
     pub children: Vec<Id>,
+
+    pub dock_id: Id,
 
     pub padding: f32,
     pub titlebar_height: f32,
@@ -2712,6 +2878,7 @@ impl Panel {
             parent_id: Id::NULL,
             child_id: Id::NULL,
             children: vec![],
+            dock_id: Id::NULL,
             root: Id::NULL,
             // nav_root: Id::NULL,
             flags: PanelFlags::NONE,
@@ -2993,7 +3160,7 @@ impl Panel {
 
     pub fn titlebar_rect(&self) -> Rect {
         if self.flags.has(PanelFlags::NO_TITLEBAR) {
-            return Rect::ZERO
+            return Rect::ZERO;
         } else {
             Rect::from_min_size(self.pos, Vec2::new(self.size.x, self.titlebar_height))
         }
@@ -3035,16 +3202,11 @@ impl Panel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Axis {
-    X = 0,
-    Y = 1,
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DockNodeKind {
     Split {
-        children: Box<[DockNode; 2]>,
+        // children: Box<[DockNode; 2]>,
+        children: [Id; 2],
         axis: Axis,
         ratio: f32,
     },
@@ -3053,15 +3215,132 @@ pub enum DockNodeKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockNode {
+    pub id: Id,
+    pub parent: Id,
     pub kind: DockNodeKind,
     pub rect: Rect,
-    pub panel: Id,
+    // pub panel: Id,
 }
 
 #[derive(Debug, Clone)]
 pub struct DockTree {
     pub nodes: IdMap<DockNode>,
-    pub roots: Vec<DockNode>,
+    // pub roots: Vec<Id>,
+}
+
+impl DockTree {
+    pub fn new() -> Self {
+        Self {
+            nodes: IdMap::new(),
+            // roots: vec![],
+        }
+    }
+
+    pub fn rescale(&mut self, node_id: Id, parent_rect: Rect) {
+        let n = &mut self.nodes[node_id];
+
+        match n.kind {
+            DockNodeKind::Split { children: [n1, n2], axis, ratio } => {
+                let mut n1_size = parent_rect.size();
+                let mut n2_size = parent_rect.size();
+                n1_size[axis as usize] *= ratio;
+                n2_size[axis as usize] *= 1.0 - ratio;
+
+                let mut n1_rect = parent_rect;
+                n1_rect.set_size(n1_size);
+
+                let mut n2_rect = parent_rect;
+                // shift min of n2 along the split axis by n1's size in that axis
+                n2_rect.min[axis as usize] += n1_size[axis as usize];
+                n2_rect.set_size(n2_size);
+
+                self.rescale(n1, n1_rect);
+                self.rescale(n2, n2_rect);
+
+            },
+            DockNodeKind::Leaf => {
+                n.rect = parent_rect;
+            },
+        }
+    }
+
+    pub fn add_root(&mut self, rect: Rect, panel_id: Id) -> Id {
+        let id = Id::from_hash(&panel_id);
+        let node = DockNode {
+            id,
+            kind: DockNodeKind::Leaf,
+            rect,
+            parent: Id::NULL,
+            // panel: panel_id,
+        };
+
+        self.nodes.insert(id, node);
+        // self.roots.push(id);
+        id
+    }
+
+    pub fn get_root(&mut self, node_id: Id) -> Id {
+        let mut parent = self.nodes[node_id].parent;
+        while !parent.is_null() {
+            parent = self.nodes[parent].parent;
+        }
+
+        parent
+    }
+
+
+    pub fn split_node(&mut self, node_id: Id, ratio: f32, axis: Axis) -> (Id, Id) {
+        assert!(ratio < 1.0 && ratio > 0.0);
+        let node = &self.nodes[node_id];
+        assert!(node.kind == DockNodeKind::Leaf);
+        let n1_id = Id::from_hash(&(node.id.0 + 0));
+        let n2_id = Id::from_hash(&(node.id.0 + 1));
+
+        let parent_rect = node.rect;
+
+        let n1 = DockNode {
+            id: n1_id,
+            kind: DockNodeKind::Leaf,
+            rect: Rect::NAN,
+            parent: node_id,
+            // panel: Id::NULL,
+        };
+
+        let n2 = DockNode {
+            id: n2_id,
+            kind: DockNodeKind::Leaf,
+            rect: Rect::NAN,
+            parent: node_id,
+            // panel: Id::NULL,
+        };
+
+        // let id = node.id;
+        // let rect = node.rect;
+        // let parent = node.parent;
+
+        self.nodes[node_id].kind = DockNodeKind::Split {
+            children: [n1_id, n2_id],
+            axis,
+            ratio,
+        };
+        // self.nodes[node_id] = DockNode {
+        //     id: node.id,
+        //     rect: node.rect,
+        //     kind: DockNodeKind::Split {
+        //         children: [n1_id, n2_id],
+        //         axis,
+        //         ratio,
+        //     },
+        //     parent: node.parent,
+        // };
+
+        self.nodes.insert(n1_id, n1);
+        self.nodes.insert(n2_id, n2);
+
+        self.rescale(node_id, parent_rect);
+
+        (n1_id, n2_id)
+    }
 }
 
 id_type!(Id);
@@ -3075,9 +3354,7 @@ impl Id {
             None => &str,
         };
 
-        let mut hasher = ahash::AHasher::default();
-        str.hash(&mut hasher);
-        Id(hasher.finish())
+        Self::from_hash(&str)
     }
 }
 
@@ -3428,6 +3705,10 @@ impl<T> IdMap<T> {
     pub fn insert(&mut self, id: Id, panel: T) {
         assert!(!id.is_null());
         self.map.insert(id, panel);
+    }
+
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, Id, T> {
+        (&self.map).iter()
     }
 
     pub fn retain<F>(&mut self, f: F)

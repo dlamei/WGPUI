@@ -261,6 +261,11 @@ impl Rect {
         self.max.y = self.min.y + h;
     }
 
+    /// keep min
+    pub fn set_size(&mut self, size: Vec2) {
+        self.max = self.min + size;
+    }
+
     /// Keep size
     pub fn set_center(&mut self, center: Vec2) {
         *self = self.translate(center - self.center());
