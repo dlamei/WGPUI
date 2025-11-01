@@ -1,6 +1,6 @@
 # WGPUI
 
-## Simple ImGui for rust + WGPU
+## Simple ImGui for Rust + WGPU
 
 
 heavy inspiration from Dear ImGui
