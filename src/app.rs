@@ -374,6 +374,11 @@ impl App {
             ui.end();
         }
 
+        ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
+        ui.begin("Viewport");
+        ui.pop_style();
+        ui.end();
+
         ui.debug_window();
 
         ui.end_frame(event_loop);

@@ -17,7 +17,11 @@ use crate::{
     rect::Rect,
 };
 
+// TODO[NOTE]: when docked there sometimes is a border a bit wider then it should be
 // TODO[NOTE]: framepadding style?
+// TODO[BUG]: stack overflow when resizing / maybe dragging scrollbar at the dock split? i think
+// its happens when dragging the lower panel of a vertically splitted node. we try to dock an
+// already docked node
 
 fn load_window_icon() -> (u32, u32, Vec<u8>) {
     use image::imageops;
@@ -54,12 +58,8 @@ fn dark_theme() -> StyleTable {
             SF::PanelBg => SV::PanelBg(RGBA::hex("#343B40")),
             SF::PanelDarkBg => SV::PanelDarkBg(RGBA::hex("#282c34")),
             SF::PanelCornerRadius => SV::PanelCornerRadius(7.0),
-            SF::PanelOutline => {
-                SV::PanelOutline(Outline::new(dark, 2.0).with_place(OutlinePlacement::Outer))
-            }
-            SF::PanelHoverOutline => SV::PanelHoverOutline(
-                Outline::new(btn_hover, 2.0).with_place(OutlinePlacement::Outer),
-            ),
+            SF::PanelOutline => SV::PanelOutline(Outline::center(dark, 2.0)),
+            SF::PanelHoverOutline => SV::PanelHoverOutline(Outline::center(btn_hover, 2.0)),
             SF::ScrollbarWidth => SV::ScrollbarWidth(6.0),
             SF::ScrollbarPadding => SV::ScrollbarPadding(5.0),
             SF::PanelPadding => SV::PanelPadding(10.0),
@@ -148,6 +148,7 @@ pub struct Context {
     pub cursor_icon: CursorIcon,
     pub cursor_icon_changed: bool,
     pub resize_threshold: f32,
+    pub undock_threshold: f32,
     pub scroll_speed: f32,
     pub n_draw_calls: usize,
 
@@ -229,6 +230,7 @@ impl Context {
             cursor_icon: CursorIcon::Default,
             cursor_icon_changed: false,
             resize_threshold: 5.0,
+            undock_threshold: 50.0,
             scroll_speed: 1.0,
             n_draw_calls: 0,
 
@@ -274,7 +276,8 @@ impl Context {
         // this is needed because outside events can change the icon, so we only update the icon
         // when it was manually changed
         if self.cursor_icon_changed {
-            self.window.set_cursor_icon(self.cursor_icon)
+            self.window.set_cursor_icon(self.cursor_icon);
+            self.cursor_icon_changed = false;
         }
     }
 
@@ -585,7 +588,9 @@ impl Context {
         p.explicit_size = self.next.size;
         p.drawlist.data.borrow_mut().circle_max_err = self.circle_max_err;
         p.drawlist.draw_clip_rect = self.draw_clip_rect;
-        p.titlebar_height = if is_window {
+        p.titlebar_height = if flags.has(PanelFlags::NO_TITLEBAR) {
+            0.0
+        } else if is_window {
             self.style.window_titlebar_height()
         } else {
             self.style.titlebar_height()
@@ -624,7 +629,7 @@ impl Context {
         //     p.nav_root = p.root;
         // }
 
-        let (pos_bounds, clam_pos_bounds) = if flags.has(PanelFlags::IS_CHILD) {
+        let (pos_bounds, clamp_pos_bounds) = if flags.has(PanelFlags::IS_CHILD) {
             let p = &self.panels[parent_id];
             (p.full_content_rect().translate(p.scroll), true)
         } else {
@@ -640,7 +645,7 @@ impl Context {
 
         let p = &mut self.panels[id];
         p.position_bounds = pos_bounds;
-        p.clamp_position_to_bounds = clam_pos_bounds;
+        p.clamp_position_to_bounds = clamp_pos_bounds;
 
         if !is_window {
             let tb_height = p.titlebar_height;
@@ -650,18 +655,39 @@ impl Context {
             let thr = self.resize_threshold;
             // p.pos.x = p.pos.x.max(pos_bounds.left() - p.size.x + thr).min(pos_bounds.top() - tb_height);
             // p.pos.x = p.pos.x.max(-p.size.x + tb_height).min(screen.x - tb_height);
-            p.pos.x = p
-                .pos
-                .x
-                .max(-p.size.x + pos_bounds.left() + tb_height)
-                .min(pos_bounds.right() - tb_height);
-            p.pos.y = p
-                .pos
-                .y
-                // .max(self.style.window_titlebar_height())
-                .max(pos_bounds.top())
-                .min(pos_bounds.bottom() - tb_height);
-            // .min(screen.y - tb_height);
+
+            if p.dock_id.is_null() {
+                p.pos.x = p
+                    .pos
+                    .x
+                    .max(-p.size.x + pos_bounds.left() + tb_height)
+                    .min(pos_bounds.right() - tb_height);
+                p.pos.y = p
+                    .pos
+                    .y
+                    // .max(self.style.window_titlebar_height())
+                    .max(pos_bounds.top())
+                    .min(pos_bounds.bottom() - tb_height);
+            } else {
+                let dock_root = self.dock_tree.get_root(p.dock_id);
+                let dock_rect = self.dock_tree.nodes[dock_root].rect;
+
+                let mut pos = dock_rect.min;
+                let size = dock_rect.size();
+                pos.x = pos
+                    .x
+                    .max(-size.x + pos_bounds.left() + tb_height)
+                    .min(pos_bounds.right() - tb_height);
+                pos.y = pos
+                    .y
+                    .max(pos_bounds.top())
+                    .min(pos_bounds.bottom() - tb_height);
+
+                if pos != dock_rect.min {
+                    self.dock_tree
+                        .recompute_rects(dock_root, Rect::from_min_size(pos, size));
+                }
+            }
         }
 
         let p = &mut self.panels[id];
@@ -671,15 +697,42 @@ impl Context {
 
         p.init_content_cursor(p.visible_content_start_pos());
 
-        let outline = if p.id == self.prev_hot_panel_id || p.id == self.active_panel_id {
-            self.style.panel_hover_outline()
+        // TODO[NOTE]: how do we design outline on hover? maybe just highlight border that can be
+        // resized
+        // let outline = if p.id == self.prev_hot_panel_id || p.id == self.active_panel_id {
+        //     self.style.panel_hover_outline()
+        // } else {
+        //     self.style.panel_outline()
+        // };
+        let panel_outline = self.style.panel_outline();
+
+        p.outline_offset = panel_outline.offset();
+
+        let corner_radii = if p.dock_id.is_null() {
+            CornerRadii::all(self.style.panel_corner_radius())
         } else {
-            self.style.panel_outline()
+            let [n_n, n_e, n_s, n_w] = self
+                .dock_tree
+                .get_neighbors(p.dock_id)
+                .map(|n| !n.is_null());
+            let [tl, tr, br, bl] = [
+                (n_n, n_w), // tl
+                (n_n, n_e), // tr
+                (n_s, n_e), // br
+                (n_s, n_w), // bl
+            ]
+            .map(|(n1, n2)| {
+                if !(n1 || n2) {
+                    self.style.panel_corner_radius()
+                } else {
+                    0.0
+                }
+            });
+
+            CornerRadii::new(tl, tr, bl, br)
         };
 
         // preserve when?
-        p.outline_offset = outline.offset();
-
         // p.full_content_size = prev_max_pos - prev_content_start;
 
         // p.full_size =
@@ -702,12 +755,13 @@ impl Context {
             p.size
         };
 
-        p.size = panel_size.min(p.max_panel_size()).max(p.min_panel_size());
+        p.size = panel_size.min(p.panel_max_size()).max(p.panel_min_size());
 
         if !p.dock_id.is_null() {
             // override pos and size if docked
             let dock_rect = self.dock_tree.nodes[p.dock_id].rect;
-            p.pos = dock_rect.min;
+            // p.pos = dock_rect.min;
+            p.move_panel_to(dock_rect.min);
             p.size = dock_rect.size();
         }
 
@@ -731,18 +785,22 @@ impl Context {
                 || self.panels[self.hot_panel_id].draw_order < p.draw_order)
             && self.panel_action.is_none()
             && !p.flags.has(PanelFlags::NO_FOCUS)
-            && self.panel_action.is_none()
         {
             self.hot_panel_id = id;
             self.hot_id = id;
         }
 
         if let PanelAction::Move {
-            id, dock_target, ..
+            id,
+            dock_target,
+            cancelled_docking,
+            drag_by_titlebar,
+            ..
         } = &mut self.panel_action
         {
             if p.clip_rect.contains(self.mouse.pos)
-                && self.panels[*id].titlebar_rect().contains(self.mouse.pos)
+                // && self.panels[*id].titlebar_rect().contains(self.mouse.pos)
+                && *drag_by_titlebar
                 && !self.modifiers.shift_key()
             {
                 let curr_draw_order = p.draw_order;
@@ -756,8 +814,9 @@ impl Context {
                 if !flags.has(PanelFlags::NO_DOCKING)
                     && curr_draw_order < moving_draw_order
                     && (curr_draw_order > dock_target_draw_order || dock_target.is_null())
+                    && !*cancelled_docking
                 {
-                    // gets reset in update_panel_move
+                    // gets reset in update_panel_dock
                     *dock_target = p.id;
                 }
             }
@@ -765,7 +824,7 @@ impl Context {
 
         // let p = &self.panels[id];
 
-        // TODO[NOTE]: include outline width in panel size
+        // TODO[NOTE]: include outline width in panel size?
         // draw panel
 
         if self.draw_position_bounds {
@@ -796,22 +855,12 @@ impl Context {
         }
 
         self.draw(
-            Rect::from_min_size(panel_pos, panel_size)
+            p.panel_rect()
                 .draw_rect()
                 .fill(bg_fill)
-                .outline(outline)
-                .corners(self.style.panel_corner_radius()),
+                // .outline(panel_outline)
+                .corners(corner_radii),
         );
-        // list.rect(panel_pos, panel_pos + panel_size)
-        //     .fill(bg_fill)
-        //     .outline(outline)
-        //     .corners(CornerRadii::all(self.style.panel_corner_radius()))
-        //     .add();
-        // });
-
-        // if self.draw_clip_rect {
-        //     self.draw_over(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
-        // }
 
         if self.draw_content_outline {
             self.draw_over(
@@ -828,36 +877,19 @@ impl Context {
                     .outline(Outline::new(RGBA::BLUE, 2.0)),
             );
         }
-        // self.draw_over(|list| {
-        //     let clip = p.panel_rect_with_outline();
-
-        //     if self.draw_clip_rect {
-        //         list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
-        //     }
-
-        //     let content_rect = p.visible_content_rect();
-        //     if self.draw_content_outline {
-        //         list.rect(content_rect.min, content_rect.max)
-        //             .outline(Outline::new(RGBA::GREEN, 2.0))
-        //             .add();
-        //     }
-
-        //     let full_content_rect = p.full_content_rect();
-        //     if self.draw_full_content_outline {
-        //         list.rect(full_content_rect.min, full_content_rect.max)
-        //             .outline(Outline::new(RGBA::BLUE, 2.0))
-        //             .add();
-        //     }
-        // });
-
         // let p = &self.panels[id];
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
             let titlebar_height = p.titlebar_height;
-            let (tb, min, max, close) = if p.id == self.window_panel_id {
-                self.draw_panel_decorations(true, true, true)
+            let p_pos = p.pos;
+            let (tb, min, max, close, min_width) = if p.id == self.window_panel_id {
+                self.draw_panel_decorations(false, true, true, true, CornerRadii::zero())
             } else {
-                self.draw_panel_decorations(false, false, true)
+                let draw_title_handle = !p.dock_id.is_null();
+                self.draw_panel_decorations(draw_title_handle, false, false, true, corner_radii)
             };
+
+            self.panels[id].title_handle_rect =
+                Rect::from_min_size(p_pos, Vec2::new(min_width, titlebar_height));
 
             if id == self.window_panel_id {
                 if min.released() {
@@ -889,8 +921,16 @@ impl Context {
             self.prev_item_data.reset();
         }
 
-        // draw scrollbar
+        // draw panel outline last
         let p = &self.panels[id];
+        self.draw(
+            p.panel_rect()
+                .draw_rect()
+                .corners(corner_radii)
+                .outline(panel_outline),
+        );
+
+        // draw scrollbar
         let (x_scroll, y_scroll) = p.needs_scrollbars();
         if y_scroll && flags.has(PanelFlags::DRAW_V_SCROLLBAR) {
             self.draw_scrollbar(1);
@@ -906,19 +946,6 @@ impl Context {
         } else {
             self.push_clip_rect(p.visible_content_rect());
         }
-        // if self.draw_clip_rect {
-        //     self.draw(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
-        // }
-        // self.draw(|list| {
-        //     // content clip rectangle
-        //     let clip = p.visible_content_rect();
-        //     list.push_clip_rect(clip);
-        //     if self.draw_clip_rect {
-        //         list.add_rect_outline(clip.min, clip.max, Outline::new(RGBA::RED, 2.0));
-        //     }
-        // });
-
-        // println!("{}: {:#?}", p.name, p.draw_list.data.borrow().clip_stack);
     }
 
     fn draw_scrollbar(&mut self, axis: usize) {
@@ -1018,10 +1045,12 @@ impl Context {
 
     pub fn draw_panel_decorations(
         &mut self,
+        draw_title_handle: bool,
         minimize: bool,
         maximize: bool,
         close: bool,
-    ) -> (Signal, Signal, Signal, Signal) {
+        panel_corners: CornerRadii,
+    ) -> (Signal, Signal, Signal, Signal, f32) {
         let p = self.get_current_panel();
         let titlebar_height = p.titlebar_height;
         let panel_pos = p.pos;
@@ -1029,42 +1058,36 @@ impl Context {
         let title = p.name.clone();
         let move_id = p.move_id;
 
-        // draw titlebar background
         let title_text = self.layout_text(&title, self.style.text_size());
         let pad = (titlebar_height - title_text.height) / 2.0;
+        // draw titlebar background
+        let mut tb_corners = panel_corners;
+        tb_corners.bl = 0.0;
+        tb_corners.br = 0.0;
+
+        let min_width = title_text.size().x + pad * 2.0;
         self.draw(
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height))
                 .draw_rect()
                 .fill(self.style.titlebar_color())
-                .corners(CornerRadii::top(self.style.panel_corner_radius())),
-        )
-        .draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
-        // self.draw(|list| {
-        //     list.rect(
-        //         panel_pos,
-        //         panel_pos + Vec2::new(panel_size.x, titlebar_height),
-        //     )
-        //     .fill(self.style.titlebar_color())
-        //     .corners(CornerRadii::top(self.style.panel_corner_radius()))
-        //     .add();
+                .corners(tb_corners),
+        );
 
-        //     let pad = (titlebar_height - title_text.height) / 2.0;
-        //     list.add_text(
-        //         panel_pos + Vec2::splat(pad),
-        //         &title_text,
-        //         self.style.text_col(),
-        //     )
-        // });
+        if draw_title_handle {
+            self.draw(
+                Rect::from_min_size(panel_pos, title_text.size() + Vec2::splat(pad * 2.0))
+                    .draw_rect()
+                    .corners(CornerRadii::top(self.style.panel_corner_radius()))
+                    .fill(self.style.panel_bg()),
+            );
+        }
 
-        // let tb_id = p.gen_id("#_TITLEBAR");
+        self.draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
+
         let tb_sig = self.register_rect(
             move_id,
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
         );
-
-        // if tb_sig.pressed() {
-        //     self.active_id = move_id;
-        // }
 
         let btn_size = Vec2::new(25.0, 25.0);
         let btn_spacing = 10.0;
@@ -1091,10 +1114,6 @@ impl Context {
             let pad = btn_size - x_icon.size();
             let pos = btn_pos + pad / 2.0;
             self.draw(x_icon.draw_rects(pos, color));
-            // self.draw(|list| {
-            //     list.add_text(pos, &x_icon, color);
-            // });
-
             btn_x -= btn_size.x + btn_spacing;
         }
 
@@ -1141,14 +1160,9 @@ impl Context {
             let pad = btn_size - min_icon.size();
             let pos = btn_pos + pad / 2.0;
             self.draw(min_icon.draw_rects(pos, color));
-            // self.draw(|list| {
-            //     let pad = btn_size - min_icon.size();
-            //     let pos = btn_pos + pad / 2.0;
-            //     list.add_text(pos, &min_icon, color);
-            // });
         }
 
-        (tb_sig, min_sig, max_sig, close_sig)
+        (tb_sig, min_sig, max_sig, close_sig, min_width)
     }
 
     pub fn update_panel_scroll(&mut self) {
@@ -1206,27 +1220,138 @@ impl Context {
     }
 
     pub fn update_panel_resize(&mut self) {
+        // check if we should start resize action
         if let Some(p) = self.panels.get_mut(self.hot_panel_id) {
             let id = p.id;
             let rect = p.panel_rect();
+            // let rect = if p.dock_id.is_null() {
+            //     p.panel_rect()
+            // } else {
+            //     let dock_root = self.dock_tree.get_root(p.dock_id);
+            //     self.dock_tree.nodes[dock_root].rect
+            // };
+
             let dir = is_in_resize_region(rect, self.mouse.pos, self.resize_threshold);
 
-            if dir.is_some()
-                && self.panel_action.is_none()
-                && !(p.flags.has(PanelFlags::NO_RESIZE) || p.is_window_panel)
+            let (can_resize_in_dir, is_split, prev_rect) = if dir.is_none() {
+                (false, false, rect)
+            } else if !p.dock_id.is_null() {
+                let [n_n, n_e, n_s, n_w] = self
+                    .dock_tree
+                    .get_neighbors(p.dock_id)
+                    .map(|n| !n.is_null());
+
+                let dock_root = self.dock_tree.get_root(p.dock_id);
+                let dock_root_rect = self.dock_tree.nodes[dock_root].rect;
+
+                match dir.unwrap() {
+                    Dir::NW => (!(n_n || n_w), false, dock_root_rect),
+                    Dir::NE => (!(n_n || n_e), false, dock_root_rect),
+                    Dir::SW => (!(n_s || n_w), false, dock_root_rect),
+                    Dir::SE => (!(n_s || n_e), false, dock_root_rect),
+                    // _ => true,
+                    Dir::N => (true, n_n, if !n_n { dock_root_rect } else { rect }),
+                    Dir::E => (true, n_e, if !n_e { dock_root_rect } else { rect }),
+                    Dir::S => (true, n_s, if !n_s { dock_root_rect } else { rect }),
+                    Dir::W => (true, n_w, if !n_w { dock_root_rect } else { rect }),
+                }
+            } else {
+                (true, false, rect)
+            };
+
+            if can_resize_in_dir && self.panel_action.is_none() && !p.is_window_panel
+            // && !(p.flags.has(PanelFlags::NO_RESIZE) || p.is_window_panel)
             {
                 let dir = dir.unwrap();
+                let dock_id = p.dock_id;
                 self.set_cursor_icon(dir.as_cursor());
 
+                // we check that we are not dragging so that if one starts dragging the mouse and
+                // then go over the panel border it should not trigger a resize action
                 if self.mouse.pressed(MouseBtn::Left) && !self.mouse.dragging(MouseBtn::Left) {
                     self.expect_drag = true;
-                    self.panel_action = PanelAction::Resize {
-                        dir,
-                        id,
-                        prev_rect: rect,
-                    };
+                    if is_split {
+                        let split_dock_id = self.dock_tree.get_split_node(dock_id, dir);
+                        assert!(!split_dock_id.is_null());
+                        let DockNodeKind::Split { ratio, .. } =
+                            self.dock_tree.nodes[split_dock_id].kind
+                        else {
+                            unreachable!()
+                        };
+
+                        self.panel_action = PanelAction::DragSplit {
+                            dir,
+                            dock_split_id: split_dock_id,
+                            prev_ratio: ratio,
+                        };
+                    } else {
+                        self.panel_action = PanelAction::Resize { dir, id, prev_rect };
+                    }
                 }
             }
+        }
+
+        if let PanelAction::DragSplit {
+            dir,
+            dock_split_id,
+            prev_ratio,
+        } = &self.panel_action
+        {
+            if !self.mouse.pressed(MouseBtn::Left) {
+                self.set_cursor_icon(CursorIcon::Default);
+                self.panel_action = PanelAction::None;
+                return;
+            }
+
+            let axis = dir.axis().unwrap();
+
+            let m_start = self
+                .mouse
+                .drag_start(MouseBtn::Left)
+                .unwrap_or(self.mouse.pos);
+            let m_delta = (self.mouse.pos - m_start)[axis as usize];
+
+            let dock_split = &self.dock_tree.nodes[*dock_split_id];
+            let split_rect = dock_split.rect;
+            let split_size = split_rect.size()[axis as usize];
+            let DockNodeKind::Split {
+                children, ratio, ..
+            } = dock_split.kind
+            else {
+                panic!()
+            };
+
+            let prev_ratio_px = prev_ratio * split_size;
+            let new_ratio_px = prev_ratio_px + m_delta;
+            let new_ratio = new_ratio_px / split_size;
+
+            for i in 0..=1 {
+                let sibling = &mut self.dock_tree.nodes[children[i]];
+                if let DockNodeKind::Split {
+                    ratio: sibling_ratio,
+                    ..
+                } = &mut sibling.kind
+                {
+                    let i_f = i as f32;
+                    let sibling_size = sibling.rect.size()[axis as usize];
+                    let sibling_ratio_px = (i_f - *sibling_ratio) * sibling_size;
+
+                    let new_sibling_size = (i_f - new_ratio) * split_size;
+
+                    let new_sibling_ratio = (i_f - sibling_ratio_px / new_sibling_size);
+                    *sibling_ratio = new_sibling_ratio;
+                }
+            }
+
+            let DockNodeKind::Split {
+                children, ratio, ..
+            } = &mut self.dock_tree.nodes[*dock_split_id].kind
+            else {
+                panic!()
+            };
+
+            *ratio = new_ratio;
+            self.dock_tree.recompute_rects(*dock_split_id, split_rect);
         }
 
         if let PanelAction::Resize { dir, id, prev_rect } = &self.panel_action {
@@ -1239,8 +1364,9 @@ impl Context {
             let pr = *prev_rect;
             let mut nr = pr;
 
-            let min_size = p.min_panel_size();
-            let max_size = p.max_panel_size();
+            // TODO[NOTE]: if docked should maybe compute min docked tree size?
+            let min_size = p.panel_min_size();
+            let max_size = p.panel_max_size();
 
             let m_start = self
                 .mouse
@@ -1269,315 +1395,344 @@ impl Context {
                 nr.max.x = (pr.max.x + m_delta.x).clamp(min_x, max_x);
             }
 
-            p.move_panel_to(nr.min);
-            p.size = nr.size();
+            if p.dock_id.is_null() {
+                p.move_panel_to(nr.min);
+                p.size = nr.size();
+            } else {
+                let dock_root = self.dock_tree.get_root(p.dock_id);
+                self.dock_tree.recompute_rects(dock_root, nr);
+            }
         }
     }
 
-    pub fn compute_dock_preview(mouse: Vec2, dock_target: Rect) -> Rect {
-        let mut preview = dock_target;
-        let mut delta = (mouse - preview.center()) / preview.size() * 2.0;
+    pub fn get_dock_target(mouse: Vec2, target_area: Rect) -> (Rect, Dir, f32) {
+        let mut dock_target = target_area;
+        let mut delta = (mouse - target_area.center()) / target_area.size() * 2.0;
         delta.x = delta.x.clamp(-1.0, 1.0);
         delta.y = delta.y.clamp(-1.0, 1.0);
 
-        // pick dominant axis (horizontal vs vertical split)
         let use_horizontal = delta.x.abs() >= delta.y.abs();
-
-        // minimum preview size to avoid inversion
         let min_px = 8.0_f32;
 
+        let dir: Dir;
+        let mut ratio: f32;
+
         if use_horizontal {
-            // compute candidate left/right based on delta.x (negative -> grow from left, positive -> grow from right)
-            let right = if delta.x >= 0.0 {
-                preview.right()
-            } else {
-                preview.left() + (delta.x + 1.0) * preview.width()
-            };
-
-            let left = if delta.x <= 0.0 {
-                preview.left()
-            } else {
-                preview.right() - (1.0 - delta.x) * preview.width()
-            };
-
-            // clamp and ensure min width
-            let left = left.clamp(preview.left(), preview.right() - min_px);
-            let right = right.clamp(preview.left() + min_px, preview.right());
-
-            preview.set_left(left);
-            preview.set_right(right);
+            dir = if delta.x >= 0.0 { Dir::E } else { Dir::W };
+            let desired_width = (1.0 - delta.x.abs()) * target_area.width();
+            let clamped_width = desired_width.clamp(min_px, target_area.width());
+            ratio = clamped_width / target_area.width();
         } else {
-            // vertical split: negative -> grow from top, positive -> grow from bottom
-            let bottom = if delta.y >= 0.0 {
-                preview.bottom()
-            } else {
-                preview.top() + (delta.y + 1.0) * preview.height()
-            };
-
-            let top = if delta.y <= 0.0 {
-                preview.top()
-            } else {
-                preview.bottom() - (1.0 - delta.y) * preview.height()
-            };
-
-            // clamp and ensure min height
-            let top = top.clamp(preview.top(), preview.bottom() - min_px);
-            let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
-
-            preview.set_top(top);
-            preview.set_bottom(bottom);
+            dir = if delta.y >= 0.0 { Dir::S } else { Dir::N };
+            let desired_height = (1.0 - delta.y.abs()) * target_area.height();
+            let clamped_height = desired_height.clamp(min_px, target_area.height());
+            ratio = clamped_height / target_area.height();
         }
 
-        preview
-    }
+        if (ratio - 0.5).abs() < 0.06 {
+            ratio = 0.5;
+        }
 
-    pub fn compute_dock_split_ratio(mouse: Vec2, dock_target: Rect) -> (Axis, f32) {
-        let mut delta = (mouse - dock_target.center()) / dock_target.size() * 2.0;
-        delta.x = delta.x.clamp(-1.0, 1.0);
-        delta.y = delta.y.clamp(-1.0, 1.0);
+        if ratio > 0.90 {
+            ratio = 0.90;
+        }
 
-        let use_horizontal = delta.x.abs() >= delta.y.abs();
-        let ratio = if use_horizontal {
-            if delta.x >= 0.0 {
-                0.5 + 0.5 * delta.x
+        if use_horizontal {
+            let width = ratio * target_area.width();
+            if dir == Dir::E {
+                let right = target_area.right();
+                let left = right - width;
+                dock_target.set_left(left);
+                dock_target.set_right(right);
             } else {
-                0.5 * (1.0 + delta.x)
+                let left = target_area.left();
+                let right = left + width;
+                dock_target.set_left(left);
+                dock_target.set_right(right);
             }
         } else {
-            if delta.y >= 0.0 {
-                0.5 + 0.5 * delta.y
+            let height = ratio * target_area.height();
+            if dir == Dir::S {
+                let bottom = target_area.bottom();
+                let top = bottom - height;
+                dock_target.set_top(top);
+                dock_target.set_bottom(bottom);
             } else {
-                0.5 * (1.0 + delta.y)
+                let top = target_area.top();
+                let bottom = top + height;
+                dock_target.set_top(top);
+                dock_target.set_bottom(bottom);
             }
+        }
+
+        (dock_target, dir, ratio)
+    }
+
+    // pub fn get_dock_target2(mouse: Vec2, target_area: Rect) -> (Rect, Dir, f32) {
+    //     let mut dock_target = target_area;
+    //     let mut delta = (mouse - dock_target.center()) / dock_target.size() * 2.0;
+    //     delta.x = delta.x.clamp(-1.0, 1.0);
+    //     delta.y = delta.y.clamp(-1.0, 1.0);
+
+    //     // pick dominant axis
+    //     let use_horizontal = delta.x.abs() >= delta.y.abs();
+
+    //     // minimum preview size to avoid inversion
+    //     let min_px = 8.0_f32;
+
+    //     let dir: Dir;
+    //     let mut ratio: f32;
+
+    //     if use_horizontal {
+    //         let right;
+    //         let left;
+
+    //         if delta.x >= 0.0 {
+    //             right = dock_target.right();
+    //             left = dock_target.right() - (1.0 - delta.x) * dock_target.width();
+    //             dir = Dir::E;
+    //         } else {
+    //             right = dock_target.left() + (delta.x + 1.0) * dock_target.width();
+    //             left = dock_target.left();
+    //             dir = Dir::W;
+    //         }
+
+    //         let left = left.clamp(dock_target.left(), dock_target.right() - min_px);
+    //         let right = right.clamp(dock_target.left() + min_px, dock_target.right());
+
+    //         dock_target.set_left(left);
+    //         dock_target.set_right(right);
+
+    //         ratio = dock_target.width() / target_area.width();
+    //     } else {
+    //         let bottom;
+    //         let top;
+
+    //         if delta.y >= 0.0 {
+    //             bottom = dock_target.bottom();
+    //             top = dock_target.bottom() - (1.0 - delta.y) * dock_target.height();
+    //             dir = Dir::S;
+    //         } else {
+    //             bottom = dock_target.top() + (delta.y + 1.0) * dock_target.height();
+    //             top = dock_target.top();
+    //             dir = Dir::N;
+    //         }
+
+    //         let top = top.clamp(dock_target.top(), dock_target.bottom() - min_px);
+    //         let bottom = bottom.clamp(dock_target.top() + min_px, dock_target.bottom());
+
+    //         dock_target.set_top(top);
+    //         dock_target.set_bottom(bottom);
+
+    //         ratio = dock_target.height() / target_area.height();
+    //     }
+
+    //     println!("{ratio}");
+    //     if (ratio - 0.5).abs() < 0.1 {
+    //         ratio = 0.5;
+    //     }
+
+    //     (dock_target, dir, ratio)
+    // }
+
+    pub fn update_panel_dock(&mut self) {
+        // check if we should dock the panel and stop move action
+        let PanelAction::Move {
+            id,
+            dock_target,
+            drag_by_titlebar: drag_tb,
+            drag_by_title_handle: drag_th,
+            cancelled_docking,
+            ..
+        } = self.panel_action
+        else {
+            return;
         };
 
-        let ratio = ratio.clamp(0.0, 1.0);
-        let axis = if use_horizontal { Axis::X } else { Axis::Y };
-        (axis, ratio)
-    }
+        let p_dock_id = self.panels[id].dock_id;
+        let can_dock = !dock_target.is_null()
+            && !cancelled_docking
+            // if already docked the tree can be docked if we drag the titlebar not the titlehandle
+            && (p_dock_id.is_null() && drag_tb || !p_dock_id.is_null() && (drag_tb && !drag_th));
 
-    pub fn compute_dock_split(mouse: Vec2, dock_target: Rect) -> (Rect, Rect) {
-        let mut preview = dock_target;
-        let mut delta = (mouse - preview.center()) / preview.size() * 2.0;
-        delta.x = delta.x.clamp(-1.0, 1.0);
-        delta.y = delta.y.clamp(-1.0, 1.0);
+        if !self.mouse.pressed(MouseBtn::Left) {
+            if can_dock {
+                // && !dock_target.is_null()
+                // if !self.panels[id].dock_id.is_null() {
+                //     log::warn!("docking with panel that is already docked");
+                // }
+                let curr_size = self.panels[id].size;
+                self.panels[id].size_pre_dock = curr_size;
+                let curr_dock_id = self.panels[id].dock_id;
 
-        let use_horizontal = delta.x.abs() >= delta.y.abs();
-        let min_px = 8.0_f32;
-        let mut other = dock_target;
+                let target_panel = &mut self.panels[dock_target];
 
-        if use_horizontal {
-            let right = if delta.x >= 0.0 {
-                preview.right()
-            } else {
-                preview.left() + (delta.x + 1.0) * preview.width()
-            };
+                if target_panel.dock_id.is_null() {
+                    // init target panel as dock node
+                    target_panel.size_pre_dock = target_panel.size;
+                    let dock_id = self
+                        .dock_tree
+                        .add_root(target_panel.full_rect, target_panel.id);
+                    target_panel.dock_id = dock_id;
+                }
 
-            let left = if delta.x <= 0.0 {
-                preview.left()
-            } else {
-                preview.right() - (1.0 - delta.x) * preview.width()
-            };
+                let (preview, dir, ratio) =
+                    Self::get_dock_target(self.mouse.pos, target_panel.panel_rect());
 
-            let left = left.clamp(preview.left(), preview.right() - min_px);
-            let right = right.clamp(preview.left() + min_px, preview.right());
+                if !curr_dock_id.is_null() {
+                    let root_dock_id = self.dock_tree.get_root(curr_dock_id);
+                    let id =
+                        self.dock_tree
+                            .merge_nodes(target_panel.dock_id, root_dock_id, ratio, dir);
+                    target_panel.dock_id = id;
+                } else {
+                    let (l, r) = self.dock_tree.split_node2(target_panel.dock_id, ratio, dir);
 
-            preview.set_left(left);
-            preview.set_right(right);
+                    target_panel.dock_id = l;
+                    self.dock_tree.nodes[l].panel_id = target_panel.id;
 
-            if delta.x >= 0.0 {
-                other.set_left(dock_target.left());
-                other.set_right(preview.left());
-                let right_clamped = other.right().clamp(other.left() + min_px, dock_target.right());
-                other.set_right(right_clamped);
-            } else {
-                other.set_left(preview.right());
-                other.set_right(dock_target.right());
-                let left_clamped = other.left().clamp(dock_target.left(), other.right() - min_px);
-                other.set_left(left_clamped);
+                    self.panels[id].dock_id = r;
+                    self.dock_tree.nodes[r].panel_id = id;
+                }
+
+                self.bring_panel_to_front(id);
             }
-        } else {
-            let bottom = if delta.y >= 0.0 {
-                preview.bottom()
-            } else {
-                preview.top() + (delta.y + 1.0) * preview.height()
-            };
 
-            let top = if delta.y <= 0.0 {
-                preview.top()
-            } else {
-                preview.bottom() - (1.0 - delta.y) * preview.height()
-            };
-
-            let top = top.clamp(preview.top(), preview.bottom() - min_px);
-            let bottom = bottom.clamp(preview.top() + min_px, preview.bottom());
-
-            preview.set_top(top);
-            preview.set_bottom(bottom);
-
-            if delta.y >= 0.0 {
-                other.set_top(dock_target.top());
-                other.set_bottom(preview.top());
-                let bottom_clamped = other.bottom().clamp(other.top() + min_px, dock_target.bottom());
-                other.set_bottom(bottom_clamped);
-            } else {
-                other.set_top(preview.bottom());
-                other.set_bottom(dock_target.bottom());
-                let top_clamped = other.top().clamp(dock_target.top(), other.bottom() - min_px);
-                other.set_top(top_clamped);
-            }
+            self.panel_action = PanelAction::None;
         }
 
-        (preview, other)
+        // draw dock preview
+        let PanelAction::Move {
+            dock_target,
+            cancelled_docking,
+            ..
+        } = &mut self.panel_action
+        else {
+            return;
+        };
+
+        if self.mouse.pressed(MouseBtn::Right) {
+            *cancelled_docking = true;
+        }
+
+        if !dock_target.is_null()
+            && (!self.panels[*dock_target].clip_rect.contains(self.mouse.pos)
+                || self.modifiers.shift_key())
+            || *cancelled_docking
+        {
+            *dock_target = Id::NULL
+        }
+
+        if !dock_target.is_null() && can_dock {
+            let dock_target_panel = &mut self.panels[*dock_target];
+            // let mut preview = dock_target_panel.visible_content_rect();
+            let mut fill = self.style.btn_press();
+            fill.a = 0.3;
+
+            let (preview, dir, ratio) =
+                Self::get_dock_target(self.mouse.pos, dock_target_panel.panel_rect());
+
+            let prev_size = preview.size() - self.style.panel_outline().width * 2.0;
+            let prev_center = preview.center();
+
+            dock_target_panel.drawlist_over.draw(
+                Rect::from_center_size(prev_center, prev_size)
+                    // preview
+                    .draw_rect()
+                    // .corners(self.style.panel_corner_radius())
+                    .fill(fill),
+            );
+        }
     }
-
-
-
 
     pub fn update_panel_move(&mut self) {
         // TODO[BUG]: after drag quickly drag over another panel make the wrong panel move
         // probably because of prev_active_panel_id and not current id
+
+        // check if we should start move action
         if !self.active_panel_id.is_null() {
             let p = &mut self.panels[self.active_panel_id];
-            if self.active_id == p.move_id && !p.move_id.is_null()
+            if self.active_id == p.move_id
+                && !p.move_id.is_null()
+                && !p.flags.has(PanelFlags::NO_MOVE)
             // || self.active_id == p.id && p.nav_root == p.move_id
             {
                 if self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_none() {
+                    let start_pos = if p.dock_id.is_null() {
+                        p.pos
+                    } else {
+                        let dock_root = self.dock_tree.get_root(p.dock_id);
+                        self.dock_tree.nodes[dock_root].rect.min
+                    };
+
+                    let mouse_pos = self.mouse.drag_start(MouseBtn::Left).unwrap();
+
+                    let tb_rect = p.titlebar_rect();
+                    let tb_handle_rect = p.title_handle_rect;
+
                     self.panel_action = PanelAction::Move {
                         id: p.root,
-                        start_pos: p.pos,
+                        start_pos,
                         dock_target: Id::NULL,
-                    }
-                }
-
-                if let PanelAction::Move {
-                    id, dock_target, ..
-                } = self.panel_action
-                {
-                    // dragged panel dropped potentially docking
-                    if self.mouse.released(MouseBtn::Left) {
-                        if !dock_target.is_null() {
-                            if !self.panels[id].dock_id.is_null() {
-                                log::warn!("docking with panel that is already docked");
-                            }
-
-                            let target_panel = &mut self.panels[dock_target];
-
-                            if target_panel.dock_id.is_null() {
-                                let dock_id = self
-                                    .dock_tree
-                                    .add_root(target_panel.full_rect, target_panel.id);
-                                target_panel.dock_id = dock_id;
-                            }
-
-                            let (new_dock, target_dock) = Self::compute_dock_split(
-                                self.mouse.pos,
-                                target_panel.visible_content_rect(),
-                            );
-
-                            // let (axis, ratio) = Self::compute_dock_split_ratio(
-                            //     self.mouse.pos,
-                            //     target_panel.full_rect,
-                            // );
-
-                            let (axis, ratio) = if new_dock.width() != target_dock.width() {
-                                (Axis::X, new_dock.width() / (new_dock.width() + target_dock.width()))
-                            } else {
-                                (Axis::Y, new_dock.height() / (new_dock.height() + target_dock.height()))
-                            };
-
-                            let (l, r) =
-                                self.dock_tree
-                                    .split_node(target_panel.dock_id, ratio, axis);
-
-                            target_panel.dock_id = l;
-                            self.panels[id].dock_id = r;
-
-
-                            // let p = &mut self.panels[id];
-                            // p.pos = preview.min;
-                            // p.size = preview.size();
-                        }
-
-                        self.panel_action = PanelAction::None;
+                        cancelled_docking: false,
+                        drag_by_titlebar: tb_rect.contains(mouse_pos),
+                        drag_by_title_handle: tb_handle_rect.contains(mouse_pos),
                     }
                 }
             }
         }
 
-        // update dock target
-        if let PanelAction::Move { dock_target, .. } = &mut self.panel_action {
-            if !dock_target.is_null()
-                && (!self.panels[*dock_target].clip_rect.contains(self.mouse.pos)
-                    || self.modifiers.shift_key())
-            {
-                *dock_target = Id::NULL
-            }
-
-            if !dock_target.is_null() {
-                let dock_target_panel = &mut self.panels[*dock_target];
-                // let mut preview = dock_target_panel.visible_content_rect();
-                let mut fill = self.style.btn_press();
-                fill.a = 0.3;
-
-                let preview = Self::compute_dock_preview(
-                    self.mouse.pos,
-                    dock_target_panel.visible_content_rect(),
-                );
-
-                dock_target_panel.drawlist_over.add(
-                    preview
-                        .draw_rect()
-                        .corners(self.style.panel_corner_radius())
-                        .fill(fill),
-                );
-            }
-
-            // if !dock_target.is_null() {
-            //     let dock_target_panel = &mut self.panels[*dock_target];
-            //     let mut preview = dock_target_panel.visible_content_rect();
-            //     let mut fill = self.style.btn_press();
-            //     fill.a = 0.3;
-
-            //     let delta = (self.mouse.pos - preview.center()) / preview.size() * 2.0;
-
-            //     let right = if delta.x >= 0.0 {
-            //         preview.right()
-            //     } else {
-            //         preview.left() + (delta.x + 1.0) * preview.width()
-            //     };
-
-            //     let left = if delta.x <= 0.0 {
-            //         preview.left()
-            //     } else {
-            //         preview.right() - (1.0 - delta.x) * preview.width()
-            //     };
-
-            //     // println!("{delta}");
-            //     preview.set_right(right);
-            //     preview.set_left(left);
-
-            //     dock_target_panel
-            //         .drawlist_over
-            //         .add(preview.draw_rect()
-            //             .corners(self.style.panel_corner_radius())
-            //             .fill(fill));
-            // }
-        }
-
-        if let &PanelAction::Move {
+        // move the panel
+        let PanelAction::Move {
             start_pos,
             id: drag_id,
             dock_target,
-        } = &self.panel_action
-        {
-            if self.mouse.dragging(MouseBtn::Left) {
-                if let Some(drag_start) = self.mouse.drag_start(MouseBtn::Left) {
+            cancelled_docking,
+            drag_by_titlebar,
+            drag_by_title_handle,
+        } = &mut self.panel_action
+        else {
+            return;
+        };
+
+        let drag_id = *drag_id;
+
+        if !self.mouse.pressed(MouseBtn::Left) && dock_target.is_null() {
+            self.panel_action = PanelAction::None;
+            return;
+        }
+
+        if self.mouse.dragging(MouseBtn::Left) {
+            let drag_start = self.mouse.drag_start(MouseBtn::Left).unwrap();
+            let p = &mut self.panels[drag_id];
+
+            let mouse_delta = *start_pos - drag_start;
+            let new_pos = self.mouse.pos + mouse_delta;
+
+            if p.dock_id.is_null() {
+                p.move_panel_to(new_pos);
+            } else if *drag_by_title_handle {
+                if (*start_pos - new_pos).length() > self.undock_threshold {
+                    let dock_root = self.dock_tree.get_root(p.dock_id);
+                    let dock_root_pos = self.dock_tree.nodes[dock_root].rect.min;
+                    let dock_pos = self.dock_tree.nodes[p.dock_id].rect.min;
+                    *start_pos += dock_pos - dock_root_pos;
+
+                    self.dock_tree.undock_node(p.dock_id, &mut self.panels);
+                    // dock root may be removed if e.g. we only had a single split
+                    // if let Some(n) = self.dock_tree.nodes.get(dock_root) {
+                    //     self.dock_tree.recompute_rects(n.id, n.rect);
+                    // }
                     let p = &mut self.panels[drag_id];
-                    let mouse_delta = start_pos - drag_start;
-                    // p.pos = self.mouse.pos + mouse_delta;
-                    p.move_panel_to(self.mouse.pos + mouse_delta);
+                    self.bring_panel_to_front(drag_id);
                 }
+            } else {
+                let dock_root = self.dock_tree.get_root(p.dock_id);
+                let n = &mut self.dock_tree.nodes[dock_root];
+                let size = n.rect.size();
+                let rect = Rect::from_min_size(new_pos, size);
+                self.dock_tree.recompute_rects(dock_root, rect);
+                // n.rect = n.rect.translate(mouse_delta);
             }
         }
     }
@@ -2056,6 +2211,132 @@ impl Context {
         p.min_size = f(p.size, p.full_size, p.full_content_size);
     }
 
+    // pub fn bring_panel_to_front(&mut self, panel_id: Id) {
+    //     assert_eq!(self.panels.len(), self.draw_order.len());
+
+    //     use std::collections::{HashMap, HashSet, VecDeque};
+
+    //     // gather the panel and all of its descendants (children, grandchildren, ...)
+    //     let mut stack = vec![panel_id];
+    //     let mut group_set: HashSet<Id> = HashSet::new();
+    //     while let Some(id) = stack.pop() {
+    //         if !group_set.insert(id) {
+    //             continue;
+    //         }
+    //         for &c in &self.panels[id].children {
+    //             stack.push(c);
+    //         }
+    //     }
+
+    //     if group_set.is_empty() {
+    //         return;
+    //     }
+
+    //     // include panels that belong to the same dock tree
+    //     let dock_id = self.panels[panel_id].dock_id;
+    //     if !dock_id.is_null() {
+    //         let dock_tree: HashSet<_> = self.dock_tree.get_tree(dock_id).into_iter().collect();
+    //         for (_, p) in &self.panels {
+    //             if !p.dock_id.is_null() && dock_tree.contains(&p.dock_id) {
+    //                 group_set.insert(p.id);
+    //             }
+    //         }
+    //     }
+
+    //     // map original draw order index for stable tie-breaking
+    //     let mut orig_index: HashMap<Id, usize> = HashMap::new();
+    //     for (i, &id) in self.draw_order.iter().enumerate() {
+    //         orig_index.insert(id, i);
+    //     }
+
+    //     // build adjacency and indegree for nodes inside group_set (parent -> child)
+    //     let mut indegree: HashMap<Id, usize> = HashMap::new();
+    //     let mut adj: HashMap<Id, Vec<Id>> = HashMap::new();
+    //     for &id in &group_set {
+    //         indegree.entry(id).or_insert(0);
+    //         for &ch in &self.panels[id].children {
+    //             if group_set.contains(&ch) {
+    //                 adj.entry(id).or_default().push(ch);
+    //                 *indegree.entry(ch).or_insert(0) += 1;
+    //             }
+    //         }
+    //     }
+
+    //     // Kahn's algorithm but stable by original draw order (parents before children)
+    //     let mut zero: Vec<Id> = indegree
+    //         .iter()
+    //         .filter_map(|(&id, &deg)| if deg == 0 { Some(id) } else { None })
+    //         .collect();
+    //     zero.sort_by_key(|id| orig_index.get(id).cloned().unwrap_or(usize::MAX));
+    //     let mut queue: VecDeque<Id> = zero.into_iter().collect();
+    //     let mut group_order: Vec<Id> = Vec::with_capacity(group_set.len());
+
+    //     while let Some(node) = queue.pop_front() {
+    //         group_order.push(node);
+    //         if let Some(neis) = adj.get(&node) {
+    //             for &m in neis {
+    //                 if let Some(d) = indegree.get_mut(&m) {
+    //                     *d -= 1;
+    //                     if *d == 0 {
+    //                         // insert preserving original order
+    //                         let pos = queue
+    //                             .iter()
+    //                             .position(|&q| {
+    //                                 orig_index
+    //                                     .get(&q)
+    //                                     .cloned()
+    //                                     .unwrap_or(usize::MAX)
+    //                                     > orig_index.get(&m).cloned().unwrap_or(usize::MAX)
+    //                             })
+    //                         .unwrap_or(queue.len());
+    //                         queue.insert(pos, m);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     // if we didn't produce a full ordering (cycle or unexpected), fall back to original relative order
+    //     if group_order.len() != group_set.len() {
+    //         group_order = self
+    //             .draw_order
+    //             .iter()
+    //             .cloned()
+    //             .filter(|id| group_set.contains(id))
+    //             .collect();
+    //     }
+
+    //     if group_order.is_empty() {
+    //         return;
+    //     }
+
+    //     // if the group is already at the very top in the same order, nothing to do
+    //     let group_len = group_order.len();
+    //     if group_len > 0 {
+    //         let tail_slice = &self.draw_order[self.draw_order.len() - group_len..];
+    //         if tail_slice == group_order.as_slice() {
+    //             return;
+    //         }
+    //     }
+
+    //     // build new draw order: all panels except group (preserving their order), then append group in the computed order
+    //     let mut new_draw_order: Vec<Id> = self
+    //         .draw_order
+    //         .iter()
+    //         .cloned()
+    //         .filter(|id| !group_set.contains(id))
+    //         .collect();
+
+    //     new_draw_order.extend(group_order.iter().cloned());
+
+    //     // write back and update per-panel draw_order indices
+    //     self.draw_order = new_draw_order;
+    //     for (i, &id) in self.draw_order.iter().enumerate() {
+    //         self.panels[id].draw_order = i;
+    //         assert_eq!(self.panels[id].draw_order, i);
+    //     }
+    // }
+
     pub fn bring_panel_to_front(&mut self, panel_id: Id) {
         assert_eq!(self.panels.len(), self.draw_order.len());
 
@@ -2074,6 +2355,18 @@ impl Context {
 
         if group_set.is_empty() {
             return;
+        }
+
+        let dock_id = self.panels[panel_id].dock_id;
+        if !dock_id.is_null() {
+            let dock_tree: HashSet<_> = self.dock_tree.get_tree(dock_id).into_iter().collect();
+
+            for (_, p) in &self.panels {
+                if !p.dock_id.is_null() && dock_tree.contains(&p.dock_id) {
+                    group_set.insert(p.id);
+                    group_set.extend(&p.children);
+                }
+            }
         }
 
         // preserve relative ordering as they appear in draw_order
@@ -2226,32 +2519,35 @@ impl Context {
             self.close_pressed = true;
         }
 
+        // let win_panel = self.get_current_panel();
+        // let win_tb_height = win_panel.titlebar_height;
+        // let win_size = win_panel.size;
+        // self.next.pos = Vec2::new(0.0, win_tb_height);
+        // self.next.size = win_size - self.next.pos;
+        // let dockspace_rect = Rect::from_min_size(self.next.pos, self.next.size);
 
-        self.update_docktree();
-    }
+        // self.push_style(StyleVar::PanelBg(RGBA::ZERO));
+        // self.push_style(StyleVar::PanelOutline(Outline::none()));
+        // self.push_style(StyleVar::PanelHoverOutline(Outline::none()));
+        // self.begin_ex(
+        //     "##_DOCK_SPACE",
+        //     PanelFlags::NO_FOCUS
+        //         | PanelFlags::NO_MOVE
+        //         | PanelFlags::NO_RESIZE
+        //         | PanelFlags::NO_TITLEBAR,
+        // );
+        // let dock_space_id = self.get_current_panel().dock_id;
+        // if !dock_space_id.is_null() {
+        //     let dock_root = self.dock_tree.get_root(dock_space_id);
+        //     self.dock_tree.recompute_rects(dock_root, dockspace_rect);
+        // }
+        // self.pop_style_n(3);
+        // self.end();
 
-    pub fn update_docktree(&mut self) {
-        self.draw_over(
-            self.dock_tree
-                .nodes
-                .iter()
-                // .flat_map(|(_, n)| match &n.kind {
-                //     DockNodeKind::Split { children, .. } => children.as_slice(),
-                //     DockNodeKind::Leaf => std::slice::from_ref(n),
-                // })
-                .map(|(_, n)| n.rect.draw_rect().outline(Outline::new(RGBA::RED, 5.0))),
-        );
-
-        if self.prev_hot_panel_id.is_null() || self.panels[self.prev_hot_panel_id].dock_id.is_null() {
-            return
-        }
-
-        let hot_panel = &self.panels[self.prev_hot_panel_id];
-        let resize = is_in_resize_region(hot_panel.panel_rect(), self.mouse.pos, self.resize_threshold);
-
-        if !resize.is_none() && self.mouse.pressed(MouseBtn::Left) {
-            println!("{resize:?}");
-        }
+        // if self.prev_hot_panel_id.is_null() || self.panels[self.prev_hot_panel_id].dock_id.is_null()
+        // {
+        //     return;
+        // }
     }
 
     pub fn push_id(&self, id: Id) {
@@ -2270,6 +2566,12 @@ impl Context {
 
     pub fn set_style(&mut self, var: StyleVar) {
         self.style.set_var(var);
+    }
+
+    pub fn pop_style_n(&mut self, n: u32) {
+        for _ in 0..n {
+            self.style.pop_var();
+        }
     }
 
     pub fn pop_style(&mut self) {
@@ -2323,6 +2625,13 @@ impl Context {
 
         ui_text!(self: "hot item: {}", self.prev_hot_id);
         ui_text!(self: "active item: {}", self.prev_active_id);
+
+        let draw_order: Vec<_> = self
+            .draw_order
+            .iter()
+            .map(|id| self.panels[*id].name.clone().replace("#", ""))
+            .collect();
+        ui_text!(self: "draw_order: {draw_order:?}");
 
         let now = Instant::now();
         let dt = (now - self.prev_frame_time).as_secs_f32();
@@ -2518,6 +2827,7 @@ impl Context {
         self.update_panel_scroll();
         self.update_panel_resize();
         self.update_panel_move();
+        self.update_panel_dock();
 
         self.prev_hot_panel_id = self.hot_panel_id;
         self.prev_active_panel_id = self.active_panel_id;
@@ -2784,6 +3094,7 @@ pub struct Panel {
 
     pub padding: f32,
     pub titlebar_height: f32,
+    pub title_handle_rect: Rect,
 
     pub scrollbar_width: f32,
     pub scrollbar_padding: f32,
@@ -2803,6 +3114,8 @@ pub struct Panel {
     /// does not include outline
     pub full_size: Vec2,
 
+    pub size_pre_dock: Vec2,
+
     pub full_rect: Rect,
     pub clip_rect: Rect,
 
@@ -2811,6 +3124,7 @@ pub struct Panel {
     ///
     /// true => panel cannot exit bounds \
     /// false => panel cannot fully exit bounds
+    // TODO[CHECK]: not used
     pub clamp_position_to_bounds: bool,
 
     // TODO[CHECK]: currently only used when placing the items. i.e. cursor position is not offset
@@ -2904,8 +3218,10 @@ impl Panel {
             draw_order: 0,
             // bg_color: RGBA::ZERO,
             titlebar_height: 0.0,
+            title_handle_rect: Rect::ZERO,
             move_id: Id::NULL,
             size: Vec2::ZERO,
+            size_pre_dock: Vec2::NAN,
             min_size: Vec2::ZERO,
             max_size: Vec2::ZERO,
             frame_created: 0,
@@ -2923,12 +3239,13 @@ impl Panel {
         }
     }
 
-    pub fn min_panel_size(&self) -> Vec2 {
+    pub fn panel_min_size(&self) -> Vec2 {
         let pad = 2.0 * self.padding;
-        Vec2::new(pad, self.titlebar_height + pad).max(self.min_size)
+        (self.title_handle_rect.size() + pad).max(self.min_size)
+        // Vec2::new(pad, self.titlebar_height + pad).max(self.min_size)
     }
 
-    pub fn max_panel_size(&self) -> Vec2 {
+    pub fn panel_max_size(&self) -> Vec2 {
         self.max_size
     }
 
@@ -3205,7 +3522,7 @@ impl Panel {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DockNodeKind {
     Split {
-        // children: Box<[DockNode; 2]>,
+        // first id is top / left, second id is bottom / right depending on axis
         children: [Id; 2],
         axis: Axis,
         ratio: f32,
@@ -3213,19 +3530,28 @@ pub enum DockNodeKind {
     Leaf,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl DockNodeKind {
+    pub fn is_split(&self) -> bool {
+        matches!(self, DockNodeKind::Split { .. })
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        matches!(self, DockNodeKind::Leaf)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DockNode {
     pub id: Id,
-    pub parent: Id,
+    pub parent_id: Id,
     pub kind: DockNodeKind,
     pub rect: Rect,
-    // pub panel: Id,
+    pub panel_id: Id,
 }
 
 #[derive(Debug, Clone)]
 pub struct DockTree {
     pub nodes: IdMap<DockNode>,
-    // pub roots: Vec<Id>,
 }
 
 impl DockTree {
@@ -3236,31 +3562,35 @@ impl DockTree {
         }
     }
 
-    pub fn rescale(&mut self, node_id: Id, parent_rect: Rect) {
+    pub fn recompute_rects(&mut self, node_id: Id, root_rect: Rect) {
         let n = &mut self.nodes[node_id];
+        n.rect = root_rect;
 
         match n.kind {
-            DockNodeKind::Split { children: [n1, n2], axis, ratio } => {
-                let mut n1_size = parent_rect.size();
-                let mut n2_size = parent_rect.size();
+            DockNodeKind::Split {
+                children: [n1, n2],
+                axis,
+                ratio,
+            } => {
+                let mut n1_size = root_rect.size();
+                let mut n2_size = root_rect.size();
                 n1_size[axis as usize] *= ratio;
                 n2_size[axis as usize] *= 1.0 - ratio;
 
-                let mut n1_rect = parent_rect;
+                let mut n1_rect = root_rect;
                 n1_rect.set_size(n1_size);
 
-                let mut n2_rect = parent_rect;
+                let mut n2_rect = root_rect;
                 // shift min of n2 along the split axis by n1's size in that axis
                 n2_rect.min[axis as usize] += n1_size[axis as usize];
                 n2_rect.set_size(n2_size);
 
-                self.rescale(n1, n1_rect);
-                self.rescale(n2, n2_rect);
-
-            },
+                self.recompute_rects(n1, n1_rect);
+                self.recompute_rects(n2, n2_rect);
+            }
             DockNodeKind::Leaf => {
-                n.rect = parent_rect;
-            },
+                n.rect = root_rect;
+            }
         }
     }
 
@@ -3270,7 +3600,8 @@ impl DockTree {
             id,
             kind: DockNodeKind::Leaf,
             rect,
-            parent: Id::NULL,
+            parent_id: Id::NULL,
+            panel_id,
             // panel: panel_id,
         };
 
@@ -3279,22 +3610,376 @@ impl DockTree {
         id
     }
 
-    pub fn get_root(&mut self, node_id: Id) -> Id {
-        let mut parent = self.nodes[node_id].parent;
-        while !parent.is_null() {
-            parent = self.nodes[parent].parent;
+    pub fn get_neighbor(&self, id: Id, dir: Dir) -> Id {
+        fn descend_to_leaf(tree: &DockTree, mut node_id: Id, child_idx: usize) -> Id {
+            loop {
+                let node = &tree.nodes[node_id];
+                match &node.kind {
+                    DockNodeKind::Split { children, .. } => {
+                        node_id = children[child_idx];
+                        // node_id = if prefer_rightmost {
+                        //     children[1]
+                        // } else {
+                        //     children[0]
+                        // };
+                    }
+                    DockNodeKind::Leaf => return node_id,
+                }
+            }
         }
 
-        parent
+        let (target_axis, c_idx) = match dir {
+            Dir::N => (Axis::Y, 1),
+            Dir::E => (Axis::X, 0),
+            Dir::S => (Axis::Y, 0),
+            Dir::W => (Axis::X, 1),
+            _ => panic!(),
+        };
+
+        let mut cur = id;
+        while !cur.is_null() {
+            let node = &self.nodes[cur];
+            let parent = node.parent_id;
+            if parent.is_null() {
+                break;
+            }
+            let pnode = &self.nodes[parent];
+            if let DockNodeKind::Split { children, axis, .. } = &pnode.kind {
+                let child_index = if children[0] == cur {
+                    0
+                } else if children[1] == cur {
+                    1
+                } else {
+                    cur = parent;
+                    continue;
+                };
+                if *axis == target_axis && child_index == c_idx {
+                    let sibling = children[1 - child_index];
+                    return descend_to_leaf(self, sibling, c_idx);
+                }
+            }
+            cur = parent;
+        }
+        Id::NULL
     }
 
+    pub fn get_neighbors(&self, id: Id) -> [Id; 4] {
+        [Dir::N, Dir::E, Dir::S, Dir::W].map(|dir| self.get_neighbor(id, dir))
+    }
 
-    pub fn split_node(&mut self, node_id: Id, ratio: f32, axis: Axis) -> (Id, Id) {
+    pub fn get_split_node(&self, id: Id, dir: Dir) -> Id {
+        let (target_axis, c_idx) = match dir {
+            Dir::N => (Axis::Y, 1),
+            Dir::E => (Axis::X, 0),
+            Dir::S => (Axis::Y, 0),
+            Dir::W => (Axis::X, 1),
+            _ => panic!(),
+        };
+
+        let mut cur = id;
+        while !cur.is_null() {
+            let node = &self.nodes[cur];
+            let parent = node.parent_id;
+            if parent.is_null() {
+                break;
+            }
+            let pnode = &self.nodes[parent];
+            if let DockNodeKind::Split { children, axis, .. } = &pnode.kind {
+                let child_index = if children[0] == cur {
+                    0
+                } else if children[1] == cur {
+                    1
+                } else {
+                    cur = parent;
+                    continue;
+                };
+                if *axis == target_axis && child_index == c_idx {
+                    return parent;
+                }
+            }
+            cur = parent;
+        }
+        Id::NULL
+    }
+
+    pub fn get_tree(&mut self, mut node_id: Id) -> Vec<Id> {
+        let root = self.get_root(node_id);
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+
+        while let Some(cur) = stack.pop() {
+            out.push(cur);
+            match &self.nodes[cur].kind {
+                DockNodeKind::Split { children, .. } => {
+                    stack.push(children[1]);
+                    stack.push(children[0]);
+                }
+                DockNodeKind::Leaf => {}
+            }
+        }
+
+        out
+    }
+
+    pub fn get_root(&mut self, mut node_id: Id) -> Id {
+        let mut node = &self.nodes[node_id];
+        while !node.parent_id.is_null() {
+            node = &self.nodes[node.parent_id];
+        }
+
+        node.id
+    }
+
+    pub fn merge_nodes(&mut self, target_id: Id, docking_id: Id, mut ratio: f32, dir: Dir) -> Id {
+        assert!(ratio < 1.0 && ratio > 0.0);
+        assert!(self.nodes[target_id].kind.is_leaf());
+
+        let original = self.nodes[target_id].clone();
+        let parent_rect = original.rect;
+
+        // create a new id for the existing content that used to live in `target_id`
+        let new_old_id = Id::from_hash(&(original.id.0 + 1));
+
+        let mut old_leaf = original;
+        old_leaf.id = new_old_id;
+        old_leaf.parent_id = target_id;
+        old_leaf.kind = DockNodeKind::Leaf;
+        old_leaf.rect = Rect::NAN;
+
+        match dir {
+            Dir::E | Dir::S => ratio = 1.0 - ratio,
+            _ => (),
+        }
+
+        // set docking node's parent to the target (assumes docking node is a root or otherwise handled by caller)
+        self.nodes[docking_id].parent_id = target_id;
+
+        let axis = match dir {
+            Dir::N | Dir::S => Axis::Y,
+            Dir::E | Dir::W => Axis::X,
+            _ => unreachable!(),
+        };
+
+        // children ordering: children[0] is top/left, children[1] is bottom/right
+        let (c0, c1) = match dir {
+            Dir::W | Dir::N => (docking_id, new_old_id), // docking goes to left/top
+            _ => (new_old_id, docking_id),               // docking goes to right/bottom
+        };
+
+        // replace target node kind with a split and insert the preserved old leaf
+        self.nodes[target_id].panel_id = Id::NULL;
+        self.nodes[target_id].kind = DockNodeKind::Split {
+            children: [c0, c1],
+            axis,
+            ratio,
+        };
+
+        self.nodes.insert(new_old_id, old_leaf);
+
+        self.recompute_rects(target_id, parent_rect);
+        new_old_id
+    }
+
+    pub fn undock_node(&mut self, node_id: Id, panels: &mut IdMap<Panel>) {
+        use DockNodeKind as DNK;
+        let n = self.nodes[node_id];
+        assert!(panels[n.panel_id].dock_id == node_id);
+        assert!(n.kind.is_leaf());
+
+        // undock this panel
+        // panels[n.panel_id].dock_id = Id::NULL;
+        let p = &mut panels[n.panel_id];
+        p.dock_id = Id::NULL;
+        p.size = p.size_pre_dock;
+        p.size_pre_dock = Vec2::NAN;
+
+        // if it's a root leaf just remove it
+        if n.parent_id.is_null() {
+            self.nodes.remove(n.id);
+            return;
+        }
+
+        let parent_id = n.parent_id;
+        let parent = self.nodes[parent_id];
+        match parent.kind {
+            DNK::Split { children, .. } => {
+                let rem_id = if children[0] == node_id {
+                    children[1]
+                } else {
+                    assert!(children[1] == node_id);
+                    children[0]
+                };
+
+                let grand_id = parent.parent_id;
+
+                if grand_id.is_null() {
+                    match self.nodes[rem_id].kind {
+                        DNK::Leaf => {
+                            // two-leaf root: remove both children and the parent, undock sibling too
+                            let rem_panel_id = self.nodes[rem_id].panel_id;
+                            panels[rem_panel_id].dock_id = Id::NULL;
+
+                            // set sibling to size of the root
+                            let parent_rect = parent.rect;
+                            panels[rem_panel_id].size = parent_rect.size();
+                            panels[rem_panel_id].pos = parent_rect.min;
+
+                            self.nodes.remove(rem_id);
+                            self.nodes.remove(n.id);
+                            self.nodes.remove(parent_id);
+                        }
+                        DNK::Split { .. } => {
+                            // promote rem_id to be the new root
+                            self.nodes[rem_id].parent_id = Id::NULL;
+                            self.nodes.remove(n.id);
+                            self.nodes.remove(parent_id);
+
+                            let parent_rect = parent.rect;
+                            // self.nodes[rem_id].rect = parent_rect;
+                            self.recompute_rects(rem_id, parent_rect);
+                        }
+                    }
+                } else {
+                    // replace parent with rem_id in grandparent
+                    {
+                        let gp = &mut self.nodes[grand_id];
+                        match &mut gp.kind {
+                            DNK::Split { children, .. } => {
+                                if children[0] == parent_id {
+                                    children[0] = rem_id;
+                                } else {
+                                    assert!(children[1] == parent_id);
+                                    children[1] = rem_id;
+                                }
+                            }
+                            DNK::Leaf => unreachable!(),
+                        }
+                    }
+
+                    self.nodes[rem_id].parent_id = grand_id;
+
+                    self.nodes.remove(n.id);
+                    self.nodes.remove(parent_id);
+
+                    let parent_rect = parent.rect;
+                    self.recompute_rects(rem_id, parent_rect);
+                }
+            }
+            DNK::Leaf => unreachable!(),
+        }
+    }
+
+    // pub fn undock_node(&mut self, node_id: Id, panels: &mut IdMap<Panel>) {
+    //     let n = self.nodes[node_id];
+    //     assert!(panels[n.panel_id].dock_id == node_id);
+    //     assert!(n.kind == DockNodeKind::Leaf);
+
+    //     if n.parent_id.is_null() {
+    //         log::warn!("undocking single leaf node");
+    //         self.nodes.remove(n.id);
+    //         return
+    //     }
+
+    //     let mut p_n = &mut self.nodes[n.parent_id];
+    //     match p_n.kind {
+    //         DockNodeKind::Split { children, axis, ratio } => {
+    //             let rem_id = if children[0] == node_id {
+    //                 children[1]
+    //             } else {
+    //                 assert!(children[1] == node_id);
+    //                 children[0]
+    //             };
+
+    //             panels[n.panel_id].dock_id = Id::NULL;
+    //             p_n.kind = DockNodeKind::Leaf;
+    //             assert!(p_n.panel_id.is_null());
+
+    //             let rem_panel_id = self.nodes[rem_id].panel_id;
+    //             let rem_panel = &mut panels[rem_panel_id];
+    //             assert!(rem_panel.dock_id == rem_id);
+    //             rem_panel.dock_id = n.parent_id;
+
+    //             self.nodes.remove(rem_id);
+    //             self.nodes.remove(n.id);
+
+    //             // if p_n.parent.is_null() {
+    //             //     // remove reminding if it is root, no dangling node
+    //             //     panels[p_n.panel_id].dock_id = Id::NULL;
+    //             //     self.nodes.remove(rem_id);
+    //             // } else {
+    //             // // promote sibling to parent
+    //             //     p_n.kind = DockNodeKind::Leaf;
+    //             //     self.nodes.remove(rem_id);
+    //             //     // self.nodes.insert(rem_id, p_n);
+    //             //     // self.nodes.remove(node_id);
+    //             //     panels[p_n.panel_id].dock_id = rem_id;
+
+    //             //     // let gp_n = &mut self.nodes[p_n.parent];
+    //             //     // match gp_n.kind {
+    //             //     //     DockNodeKind::Split { children, axis, ratio } => {
+    //             //     //     },
+    //             //     //     DockNodeKind::Leaf => panic!(),
+    //             //     // }
+    //             // }
+    //         },
+    //         DockNodeKind::Leaf => panic!(),
+    //     }
+    // }
+
+    // /// instead of split_node which creates two new nodes we dock one existing node into another
+    // /// node
+    // pub fn merge_nodes(&mut self, target_id: Id, docking_id: Id, mut ratio: f32, dir: Dir) -> Id {
+    //     assert!(ratio < 1.0 && ratio > 0.0);
+    //     let target = &self.nodes[target_id];
+    //     assert!(target.kind == DockNodeKind::Leaf);
+    //     let mut n1_id = Id::from_hash(&(target.id.0 + 0));
+    //     let mut n2_id = target_id;
+
+    //     match dir {
+    //         Dir::E | Dir::S => ratio = 1.0 - ratio,
+    //         _ => (),
+    //     }
+
+    //     let parent_rect = target.rect;
+
+    //     let n1 = DockNode {
+    //         id: n1_id,
+    //         kind: DockNodeKind::Leaf,
+    //         rect: Rect::NAN,
+    //         parent: target_id,
+    //     };
+
+    //     let axis = match dir {
+    //         Dir::N | Dir::S => Axis::Y,
+    //         Dir::E | Dir::W => Axis::X,
+    //         _ => unreachable!(),
+    //     };
+
+    //     self.nodes[target_id].kind = DockNodeKind::Split {
+    //         children: [n1_id, n2_id],
+    //         axis,
+    //         ratio,
+    //     };
+
+    //     self.nodes.insert(n1_id, n1);
+    //     self.recompute_rects(target_id, parent_rect);
+
+    //     n1_id
+    // }
+
+    pub fn resize(&mut self, node_id: Id, dir: Dir, new_size: Rect) {}
+
+    pub fn split_node2(&mut self, node_id: Id, mut ratio: f32, dir: Dir) -> (Id, Id) {
         assert!(ratio < 1.0 && ratio > 0.0);
         let node = &self.nodes[node_id];
         assert!(node.kind == DockNodeKind::Leaf);
-        let n1_id = Id::from_hash(&(node.id.0 + 0));
-        let n2_id = Id::from_hash(&(node.id.0 + 1));
+        let mut n1_id = Id::from_hash(&(node.id.0 + 0));
+        let mut n2_id = Id::from_hash(&(node.id.0 + 1));
+
+        match dir {
+            Dir::E | Dir::S => ratio = 1.0 - ratio,
+            _ => (),
+        }
 
         let parent_rect = node.rect;
 
@@ -3302,42 +3987,40 @@ impl DockTree {
             id: n1_id,
             kind: DockNodeKind::Leaf,
             rect: Rect::NAN,
-            parent: node_id,
-            // panel: Id::NULL,
+            parent_id: node_id,
+            panel_id: Id::NULL,
         };
 
         let n2 = DockNode {
             id: n2_id,
             kind: DockNodeKind::Leaf,
             rect: Rect::NAN,
-            parent: node_id,
-            // panel: Id::NULL,
+            parent_id: node_id,
+            panel_id: Id::NULL,
         };
 
-        // let id = node.id;
-        // let rect = node.rect;
-        // let parent = node.parent;
+        let axis = match dir {
+            Dir::N | Dir::S => Axis::Y,
+            Dir::E | Dir::W => Axis::X,
+            _ => unreachable!(),
+        };
 
+        self.nodes[node_id].panel_id = Id::NULL;
         self.nodes[node_id].kind = DockNodeKind::Split {
             children: [n1_id, n2_id],
             axis,
             ratio,
         };
-        // self.nodes[node_id] = DockNode {
-        //     id: node.id,
-        //     rect: node.rect,
-        //     kind: DockNodeKind::Split {
-        //         children: [n1_id, n2_id],
-        //         axis,
-        //         ratio,
-        //     },
-        //     parent: node.parent,
-        // };
 
         self.nodes.insert(n1_id, n1);
         self.nodes.insert(n2_id, n2);
 
-        self.rescale(node_id, parent_rect);
+        self.recompute_rects(node_id, parent_rect);
+
+        match dir {
+            Dir::W | Dir::N => std::mem::swap(&mut n1_id, &mut n2_id),
+            _ => (),
+        }
 
         (n1_id, n2_id)
     }
@@ -3591,6 +4274,11 @@ pub enum PanelPlacement {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelAction {
+    DragSplit {
+        dir: Dir,
+        dock_split_id: Id,
+        prev_ratio: f32,
+    },
     Resize {
         dir: Dir,
         id: Id,
@@ -3600,6 +4288,10 @@ pub enum PanelAction {
         start_pos: Vec2,
         id: Id,
         dock_target: Id,
+        drag_by_titlebar: bool,
+        drag_by_title_handle: bool,
+        // left-click cancels docking for the current panel being dragged
+        cancelled_docking: bool,
     },
     Scroll {
         axis: usize,
@@ -3614,6 +4306,13 @@ pub enum PanelAction {
 impl fmt::Display for PanelAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DragSplit {
+                dir,
+                dock_split_id: split_dock_id,
+                prev_ratio,
+            } => {
+                write!(f, "DRAG_SPLIT[{dir:?}] {{ {split_dock_id}, {prev_ratio} }}")
+            }
             Self::Resize { dir, id, prev_rect } => {
                 write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}")
             }
@@ -3621,7 +4320,13 @@ impl fmt::Display for PanelAction {
                 start_pos,
                 id,
                 dock_target,
-            } => write!(f, "MOVE {{ {id}, {start_pos}, {dock_target} }}"),
+                cancelled_docking,
+                drag_by_titlebar,
+                drag_by_title_handle,
+            } => write!(
+                f,
+                "MOVE {{ {id}, {start_pos}, dock_target: {dock_target}, cancel_dock: {cancelled_docking}, drag_tb: {drag_by_titlebar}, drag_title: {drag_by_title_handle} }}"
+            ),
             Self::Scroll {
                 start_scroll: start_offset,
                 id,
@@ -3705,6 +4410,11 @@ impl<T> IdMap<T> {
     pub fn insert(&mut self, id: Id, panel: T) {
         assert!(!id.is_null());
         self.map.insert(id, panel);
+    }
+
+    pub fn remove(&mut self, id: Id) {
+        assert!(!id.is_null());
+        self.map.remove(&id);
     }
 
     pub fn iter(&self) -> std::collections::hash_map::Iter<'_, Id, T> {
@@ -4445,7 +5155,7 @@ impl DrawList {
         data.clear();
     }
 
-    pub fn add(&self, itm: impl DrawableRects) {
+    pub fn draw(&self, itm: impl DrawableRects) {
         itm.add_to_drawlist(self);
     }
 

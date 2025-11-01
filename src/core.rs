@@ -840,17 +840,25 @@ impl Dir {
         }
     }
 
-    pub fn has_n(&self) -> bool {
+    pub fn has_n(self) -> bool {
         matches!(self, Self::N | Self::NE | Self::NW)
     }
-    pub fn has_e(&self) -> bool {
+    pub fn has_e(self) -> bool {
         matches!(self, Self::E | Self::NE | Self::SE)
     }
-    pub fn has_s(&self) -> bool {
+    pub fn has_s(self) -> bool {
         matches!(self, Self::S | Self::SE | Self::SW)
     }
-    pub fn has_w(&self) -> bool {
+    pub fn has_w(self) -> bool {
         matches!(self, Self::W | Self::NW | Self::SW)
+    }
+
+    pub fn axis(self) -> Option<Axis> {
+        match self {
+            Dir::N | Dir::S => Some(Axis::Y),
+            Dir::E | Dir::W => Some(Axis::X),
+            _ => None,
+        }
     }
 
     pub fn as_winit_resize(&self) -> winit::window::ResizeDirection {
