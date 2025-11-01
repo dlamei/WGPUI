@@ -1321,17 +1321,26 @@ impl Context {
                 panic!()
             };
 
+            let split_range = self.dock_tree.get_split_range(*dock_split_id);
+            let tb_height = self.style.titlebar_height() + 5.0;
+
             let prev_ratio_px = prev_ratio * split_size;
             let new_ratio_px = prev_ratio_px + m_delta;
-            let new_ratio = new_ratio_px / split_size;
+            let new_ratio = new_ratio_px.min(split_range - tb_height).max(tb_height) / split_size;
+
 
             for i in 0..=1 {
                 let sibling = &mut self.dock_tree.nodes[children[i]];
                 if let DockNodeKind::Split {
                     ratio: sibling_ratio,
+                    axis: sibling_axis,
                     ..
                 } = &mut sibling.kind
                 {
+                    if axis != *sibling_axis {
+                        continue;
+                    }
+
                     let i_f = i as f32;
                     let sibling_size = sibling.rect.size()[axis as usize];
                     let sibling_ratio_px = (i_f - *sibling_ratio) * sibling_size;
@@ -3610,6 +3619,7 @@ impl DockTree {
         id
     }
 
+
     pub fn get_neighbor(&self, id: Id, dir: Dir) -> Id {
         fn descend_to_leaf(tree: &DockTree, mut node_id: Id, child_idx: usize) -> Id {
             loop {
@@ -3666,6 +3676,73 @@ impl DockTree {
     pub fn get_neighbors(&self, id: Id) -> [Id; 4] {
         [Dir::N, Dir::E, Dir::S, Dir::W].map(|dir| self.get_neighbor(id, dir))
     }
+
+    pub fn get_split_range(&self, id: Id) -> f32 {
+        fn descend_to_leaf(tree: &DockTree, mut node_id: Id, child_idx: usize) -> Id {
+            loop {
+                let node = &tree.nodes[node_id];
+                match &node.kind {
+                    DockNodeKind::Split { children, .. } => {
+                        node_id = children[child_idx];
+                    }
+                    DockNodeKind::Leaf => return node_id,
+                }
+            }
+        }
+
+        let split_node = &self.nodes[id];
+        let DockNodeKind::Split { children, axis, .. } = split_node.kind else {
+            panic!()
+        };
+
+        // Find the rightmost leaf of left child and leftmost leaf of right child
+        let c1 = descend_to_leaf(self, children[0], 1);
+        let c2 = descend_to_leaf(self, children[1], 0);
+        let r1 = self.nodes[c1].rect;
+        let r2 = self.nodes[c2].rect;
+
+        // Compute size along the split axis (perpendicular to the split line)
+        match axis {
+            Axis::X => r1.width() + r2.width(),
+            Axis::Y => r1.height() + r2.height(),
+        }
+    }
+
+    // pub fn get_split_range(&self, id: Id) -> f32 {
+    //     fn descend_to_leaf(tree: &DockTree, mut node_id: Id, child_idx: usize) -> Id {
+    //         loop {
+    //             let node = &tree.nodes[node_id];
+    //             match &node.kind {
+    //                 DockNodeKind::Split { children, .. } => {
+    //                     node_id = children[child_idx];
+    //                     // node_id = if prefer_rightmost {
+    //                     //     children[1]
+    //                     // } else {
+    //                     //     children[0]
+    //                     // };
+    //                 }
+    //                 DockNodeKind::Leaf => return node_id,
+    //             }
+    //         }
+    //     }
+
+    //     let split_node = self.nodes[id];
+    //     let DockNodeKind::Split { children, axis, .. } = split_node.kind else {
+    //         panic!()
+    //     };
+
+    //     let c1 = descend_to_leaf(self, children[0], 1);
+    //     let c2 = descend_to_leaf(self, children[1], 0);
+    //     let r1 = self.nodes[c1].rect;
+    //     let r2 = self.nodes[c2].rect;
+
+    //     match axis {
+    //         Axis::X => r2.right() - r1.left(),
+    //         Axis::Y => r2.bottom() - r1.top(),
+    //     }
+    // }
+
+
 
     pub fn get_split_node(&self, id: Id, dir: Dir) -> Id {
         let (target_axis, c_idx) = match dir {

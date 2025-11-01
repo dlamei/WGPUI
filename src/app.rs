@@ -180,7 +180,7 @@ impl AppSetup {
             if let Some(receiver) = renderer_rec.as_mut() {
                 if let Ok(Some((wgpu, window))) = receiver.try_recv() {
                     let window_id = window.id;
-                    window.raw.set_prevent_default(false);
+                    // window.raw.set_prevent_default(false);
                     window.request_redraw();
                     let size = window.window_size();
                     *self = Self::Init(App::new(wgpu, window));
