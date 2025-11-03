@@ -460,7 +460,9 @@ impl WGPU {
             wgpu::Backends::METAL
         } else if cfg!(target_os = "windows") {
             wgpu::Backends::PRIMARY
-        } else if cfg!(target_arch = "wasm32") {
+        } else if cfg!(all(target_arch = "wasm32", feature = "webgl")) {
+            wgpu::Backends::GL
+        } else if cfg!(all(target_arch = "wasm32", feature = "webgpu")) {
             wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU
         } else {
             wgpu::Backends::all()
