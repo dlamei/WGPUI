@@ -274,6 +274,16 @@ impl App {
                 }
                 // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
+            WE::Touch(winit::event::Touch { phase, location, .. }) => {
+                let pos: winit::dpi::LogicalPosition<f32> = location.to_logical(self.ui.window.raw.scale_factor());
+                self.ui.set_mouse_pos(pos.x, pos.y);
+                match phase {
+                    winit::event::TouchPhase::Started => self.ui.set_mouse_press(MouseBtn::Left, true),
+                    winit::event::TouchPhase::Moved => (),
+                    winit::event::TouchPhase::Ended => self.ui.set_mouse_press(MouseBtn::Left, false),
+                    winit::event::TouchPhase::Cancelled => self.ui.set_mouse_press(MouseBtn::Left, false),
+                }
+            }
             WE::CursorEntered { .. } => {
                 // self.ui.cursor_in_window = true;
             }
@@ -413,7 +423,6 @@ impl App {
         // ui.pop_style();
         // ui.end();
 
-        ui.next.max_size.x = 500.0;
         ui.debug_window();
 
         ui.end_frame(event_loop);

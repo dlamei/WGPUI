@@ -1362,6 +1362,7 @@ impl Context {
         // p.next_scroll = scroll.min(scroll_max).max(scroll_min);
     }
 
+    // TODO[bug] handle panel max size when docked
     pub fn update_panel_resize(&mut self) {
         // check if we should start resize action
         if let Some(p) = self.panels.get_mut(self.hot_panel_id) {
