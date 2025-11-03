@@ -12,7 +12,7 @@ image = "0.25.8"
 
 macros = { path = "./macros" }
 
-wgpu = "26.0.1"
+wgpu = "27.0.1"
 winit = "0.30.12"
 
 cosmic-text = "0.14.2"
@@ -37,9 +37,9 @@ wasm-bindgen-futures = "0.4.51"
 
 
 [features]
-default = ["webgl"]
-webgl = []
-webgpu = []
+default = ["wgpu/default"]
+webgl = ["wgpu/webgl"]
+webgpu = ["wgpu/webgpu"]
 
 [profile.release]
 debug = true

@@ -484,12 +484,14 @@ impl WGPU {
             .expect("Failed to request adapter!");
 
         let (device, queue) = {
+            log::info!("WGPU Adapter Info: {:#?}", adapter.get_info());
             log::info!("WGPU Adapter Features: {:#?}", adapter.features());
             adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("WGPU Device"),
                     memory_hints: wgpu::MemoryHints::default(),
                     trace: wgpu::Trace::Off,
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
 
                     #[cfg(not(target_arch = "wasm32"))]
                     required_features: wgpu::Features::POLYGON_MODE_LINE,
