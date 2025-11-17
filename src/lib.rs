@@ -6,6 +6,7 @@ pub mod rect;
 mod ui;
 mod ui_items;
 mod ui_context;
+mod ui_panel;
 
 use std::sync::Arc;
 
