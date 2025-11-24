@@ -96,7 +96,7 @@ fn dark_theme() -> StyleTable {
             SF::ScrollbarWidth => SV::ScrollbarWidth(6.0),
             SF::ScrollbarPadding => SV::ScrollbarPadding(5.0),
             SF::PanelPadding => SV::PanelPadding(10.0),
-            SF::SpacingV => SV::SpacingV(6.0),
+            SF::SpacingV => SV::SpacingV(1.0),
             SF::SpacingH => SV::SpacingH(12.0),
             SF::Red => SV::Red(RGBA::hex("#e65858")),
         }
@@ -377,7 +377,13 @@ impl Context {
                 input.select_all();
             }
             PhysicalKey::Code(KeyCode::Delete) => input.delete(),
-            PhysicalKey::Code(KeyCode::Enter) => input.enter(),
+            PhysicalKey::Code(KeyCode::Enter) => {
+                if input.multiline {
+                    input.enter()
+                } else {
+                    self.active_id = Id::NULL;
+                }
+            }
             _ => {
                 if let Some(text) = &key.text {
                     input.paste(&text);
@@ -1868,7 +1874,7 @@ impl Context {
             target_panel.size_pre_dock = target_panel.size;
             let dock_id = self
                 .docktree
-                .add_root(target_panel.full_rect, target_panel.id);
+                .add_root(target_panel.panel_rect(), target_panel.id);
             target_panel.dock_id = dock_id;
 
             let target_panel_id = target_panel.id;
@@ -2235,6 +2241,18 @@ impl Context {
             if self.mouse.double_pressed(Btn::Middle) {
                 sig |= Signal::DOUBLE_PRESSED_MIDDLE;
             }
+
+
+            if self.mouse.clicked(Btn::Left) {
+                sig |= Signal::CLICKED_LEFT;
+            }
+            if self.mouse.clicked(Btn::Right) {
+                sig |= Signal::CLICKED_RIGHT;
+            }
+            if self.mouse.clicked(Btn::Middle) {
+                sig |= Signal::CLICKED_MIDDLE;
+            }
+
 
             if self.mouse.double_clicked(Btn::Left) {
                 sig |= Signal::DOUBLE_CLICKED_LEFT;
@@ -3072,44 +3090,44 @@ impl Context {
 
         if self.tabitem("Style Settings") {
             let mut v = self.style.titlebar_height();
-            self.slider_f32("titlebar height", 0.0, 100.0, &mut v);
+            self.input_slider_f32("titlebar height", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::TitlebarHeight(v));
 
             let mut v = self.style.window_titlebar_height();
-            self.slider_f32("window titlebar height", 0.0, 100.0, &mut v);
+            self.input_slider_f32("window titlebar height", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::WindowTitlebarHeight(v));
 
             let mut v = self.style.spacing_h();
-            self.slider_f32("spacing h", 0.0, 30.0, &mut v);
+            self.input_slider_f32("spacing h", 0.0, 30.0, &mut v);
             self.style.set_var(StyleVar::SpacingH(v));
 
             let mut v = self.style.spacing_v();
-            self.slider_f32("spacing v", 0.0, 30.0, &mut v);
+            self.input_slider_f32("spacing v", 0.0, 30.0, &mut v);
             self.style.set_var(StyleVar::SpacingV(v));
 
             let mut v = self.style.line_height();
-            self.slider_f32("line height", 0.0, 30.0, &mut v);
+            self.input_slider_f32("line height", 0.0, 30.0, &mut v);
             self.style.set_var(StyleVar::LineHeight(v));
 
             let mut v = self.style.panel_padding();
-            self.slider_f32("panel padding", 0.0, 30.0, &mut v);
+            self.input_slider_f32("panel padding", 0.0, 30.0, &mut v);
             v = v.round();
             self.style.set_var(StyleVar::PanelPadding(v));
 
             let mut out1 = self.style.panel_outline();
             let mut out2 = self.style.panel_hover_outline();
-            self.slider_f32("panel outline width", 0.0, 30.0, &mut out1.width);
+            self.input_slider_f32("panel outline width", 0.0, 30.0, &mut out1.width);
             out2.width = out1.width;
             self.style.set_var(StyleVar::PanelOutline(out1));
             self.style.set_var(StyleVar::PanelHoverOutline(out2));
 
             let mut v = self.style.scrollbar_width();
-            self.slider_f32("scrollbar width", 0.0, 30.0, &mut v);
+            self.input_slider_f32("scrollbar width", 0.0, 30.0, &mut v);
             v = v.round();
             self.style.set_var(StyleVar::ScrollbarWidth(v));
 
             let mut v = self.style.scrollbar_padding();
-            self.slider_f32("scrollbar padding", 0.0, 30.0, &mut v);
+            self.input_slider_f32("scrollbar padding", 0.0, 30.0, &mut v);
             v = v.round();
             self.style.set_var(StyleVar::ScrollbarPadding(v));
 
@@ -3119,11 +3137,11 @@ impl Context {
             // self.style.set_var(StyleVar::TextSize(v));
 
             let mut v = self.style.btn_roundness();
-            self.slider_f32("button corners", 0.0, 0.5, &mut v);
+            self.input_slider_f32("button corners", 0.0, 0.5, &mut v);
             self.style.set_var(StyleVar::BtnRoundness(v));
 
             let mut v = self.style.panel_corner_radius();
-            self.slider_f32("panel corners", 0.0, 100.0, &mut v);
+            self.input_slider_f32("panel corners", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::PanelCornerRadius(v));
         }
 

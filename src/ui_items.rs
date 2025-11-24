@@ -210,8 +210,11 @@ impl ui::Context {
         let usable_width = (rect.width() - handle_size - rail_pad).max(0.0);
 
         if sig.pressed() || sig.dragging() {
+            // Map mouse.x to the handle CENTER (not the left edge).
+            // leftmost: minimal handle_min.x
+            let leftmost = rect.min.x + rail_pad * 0.5;
             let denom = usable_width.max(1.0);
-            let t = ((self.mouse.pos.x - (rect.min.x + handle_size)) / denom).clamp(0.0, 1.0);
+            let t = ((self.mouse.pos.x - (leftmost + handle_size * 0.5)) / denom).clamp(0.0, 1.0);
             if (max - min).abs() > f32::EPSILON {
                 *val = min + t * (max - min);
             }
@@ -227,7 +230,7 @@ impl ui::Context {
         handle_min.x += ratio * usable_width;
         let handle_max = handle_min + Vec2::splat(handle_size);
 
-        if sig.hovering() {
+        if sig.hovering() || sig.dragging() {
             self.set_cursor_icon(CursorIcon::MoveH);
         }
         if sig.pressed() && !sig.dragging() {
@@ -260,6 +263,137 @@ impl ui::Context {
         //     .fill(handle_col)
         //     .add()
         // });
+
+        self.same_line();
+        self.text(label);
+    }
+
+    /// Slider that shows the current value centered. Click to edit the value as text,
+    /// drag to change it continuously.
+    pub fn input_slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
+        // AI SLOP
+        use ctext::Edit;
+
+        let height = self.style.line_height();
+        let width = self.available_content().x / 2.5;
+        let id = self.gen_id(label);
+        let rect = self.place_item(id, Vec2::new(width, height));
+        let sig = self.register_item(id);
+
+        let handle_size = height * 0.8;
+        let rail_pad = height - handle_size;
+        let usable_width = (rect.width() - handle_size - rail_pad).max(1.0);
+
+        // If there's an active text editor for this item we are in edit mode
+        let is_editing = self.text_input_states.contains_id(id);
+
+        // Cursor hints when hovering/dragging
+        if !is_editing && (sig.hovering() || sig.dragging()) {
+            self.set_cursor_icon(CursorIcon::MoveH);
+        } else if is_editing && sig.hovering() {
+            self.set_cursor_icon(CursorIcon::Text);
+        }
+
+        // Dragging adjusts the value when not editing
+        if sig.dragging() && !is_editing {
+            let leftmost_center = rect.min.x + rail_pad * 0.5 + handle_size * 0.5;
+            let t = ((self.mouse.pos.x - leftmost_center) / usable_width).clamp(0.0, 1.0);
+            if (max - min).abs() > f32::EPSILON {
+                *val = min + t * (max - min);
+            }
+        }
+
+        // Draw only the rail background here; the numeric/text editor is drawn below
+        let rail_col = if sig.dragging() || sig.pressed() {
+            self.style.panel_dark_bg()
+        } else if sig.hovering() {
+            self.style.btn_hover()
+        } else {
+            self.style.btn_default()
+        };
+        self.draw(
+            rect.draw_rect()
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .fill(rail_col),
+        );
+
+        // Editing: show text editor centered in the rail
+        if is_editing {
+            let sig2 = self.register_rect(id, rect);
+
+            let input = &mut self.text_input_states[id];
+            input.edit.shape_as_needed(&mut self.font_table.sys(), true);
+            let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.draw.wgpu);
+            let dim = layout.size();
+            // Left-align the editor inside the rail with a small left padding
+            let left_padding = rail_pad * 0.5 + 4.0; // extra 4px for breathing room
+            let edit_pos = rect.min + Vec2::new(left_padding, (rect.height() - dim.y) * 0.5);
+
+            // Forward mouse events relative to the editor origin
+            let rel = self.mouse.pos - edit_pos;
+            if sig2.double_pressed() {
+                input.mouse_double_clicked(rel);
+            } else if sig2.dragging() {
+                input.mouse_dragging(rel);
+            } else if sig2.pressed() {
+                input.mouse_pressed(rel);
+            }
+
+            // Live-validate input text
+            let cur_text = input.copy_all();
+            if let Ok(v) = cur_text.trim().parse::<f32>() {
+                *val = v.clamp(min, max);
+            }
+
+            // Draw editor background (was previously drawn inside draw_text_input)
+            let bg = self.style.panel_dark_bg();
+            self.draw(
+                rect.draw_rect()
+                    .fill(bg)
+                    .corners(self.style.btn_corner_radius()),
+            );
+            self.draw_text_input(id, edit_pos, rect);
+
+            // Commit on focus loss
+            if self.active_id != id {
+                let new_text = self.text_input_states[id].copy_all();
+                if let Ok(v) = new_text.trim().parse::<f32>() {
+                    *val = v.clamp(min, max);
+                }
+                self.text_input_states.remove(id);
+            }
+        } else {
+            // Display centered numeric value when not editing
+            // Format with up to 3 decimal places, trimming unnecessary trailing zeros
+            let val_txt = {
+                let v = *val;
+                if !v.is_finite() {
+                    format!("{}", v)
+                } else {
+                    let formatted = format!("{:.3}", v);
+                    if formatted.contains('.') {
+                        formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+                    } else {
+                        formatted
+                    }
+                }
+            };
+            let txt = self.layout_text(&val_txt, self.style.text_size());
+            let txt_sz = txt.size();
+            let txt_pos = rect.min + Vec2::new((rect.width() - txt_sz.x) * 0.5, (rect.height() - txt_sz.y) * 0.5);
+            self.draw(txt.draw_rects(txt_pos, self.style.text_col()));
+
+            // Click to open editor (ignore if drag started outside)
+            let start_drag_outside = self.mouse.drag_start(MouseBtn::Left).map_or(false, |p| !rect.contains(p));
+            if sig.clicked() && !start_drag_outside {
+                let s = format!("{}", *val);
+                let item = ui::TextItem::new(s, self.style.text_size(), 1.0, "Inter");
+                self.text_input_states.insert(id, TextInputState::new(self.font_table.clone(), item, false));
+                self.text_input_states[id].select_all();
+                self.active_id = id;
+                self.active_id_changed = true;
+            }
+        }
 
         self.same_line();
         self.text(label);
@@ -421,6 +555,13 @@ impl ui::Context {
 
         let text_pos =
             rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
+        // Draw input background (caller is responsible now)
+        let bg = self.style.panel_dark_bg();
+        self.draw(
+            rect.draw_rect()
+                .fill(bg)
+                .corners(self.style.btn_corner_radius()),
+        );
         self.draw_text_input(id, text_pos, rect);
     }
 
@@ -579,12 +720,8 @@ impl ui::Context {
         //     .corners(CornerRadii::all(self.style.btn_corner_radius()))
         //     .fill(bg)
         //     .add();
+        // Background is drawn by the caller; draw selection highlights next
         self.draw(
-            rect.draw_rect()
-                .fill(bg)
-                .corners(self.style.btn_corner_radius()),
-        )
-        .draw(
             selection_rects
                 .iter()
                 .map(|r| r.draw_rect().offset(pos).fill(selection_color)),

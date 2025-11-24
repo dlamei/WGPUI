@@ -501,6 +501,7 @@ pub struct Cursor {
 
 macros::flags!(DockNodeFlag:
     NO_BRING_TO_FRONT,
+    // a tree will not dissolve if only a single leaf is at the root
     ALLOW_SINGLE_LEAF,
 );
 
@@ -1097,6 +1098,10 @@ impl DockTree {
                         DNK::Split { .. } => {
                             // promote rem_id (a subtree) to be the new root
                             self.nodes[rem_id].parent_id = Id::NULL;
+
+                            // preserve flags from the old root so special root flags
+                            // (e.g. ALLOW_SINGLE_LEAF, NO_BRING_TO_FRONT) are not lost
+                            self.nodes[rem_id].flags = self.nodes[rem_id].flags | parent.flags;
 
                             self.nodes.remove(n.id);
                             self.nodes.remove(parent_id);
