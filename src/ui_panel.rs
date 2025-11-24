@@ -38,7 +38,7 @@ pub struct Panel {
     pub name: String,
     pub id: Id,
     /// set active_id to this id to start dragging the panel
-    pub move_id: Id,
+    // pub move_id: Id,
     pub flags: PanelFlag,
 
     pub root: Id,
@@ -114,6 +114,7 @@ pub struct Panel {
     pub frame_created: u64,
     pub close_pressed: bool,
     pub is_window_panel: bool,
+    pub resize_pass: bool,
 
     // try to not borrow outside of impl Panel { ... }
     pub drawlist: DrawList,
@@ -177,7 +178,7 @@ impl Panel {
             // bg_color: RGBA::ZERO,
             titlebar_height: 0.0,
             title_handle_rect: Rect::ZERO,
-            move_id: Id::NULL,
+            // move_id: Id::NULL,
             size: Vec2::ZERO,
             size_pre_dock: Vec2::NAN,
             min_size: Vec2::ZERO,
@@ -188,6 +189,7 @@ impl Panel {
             // id_stack: Vec::new(),
             close_pressed: false,
             is_window_panel: false,
+            resize_pass: true,
 
             drawlist: DrawList::new(),
             drawlist_over: DrawList::new(),
@@ -377,11 +379,18 @@ impl Panel {
 
     pub fn gen_id(&self, label: impl hash::Hash) -> Id {
         use std::hash::{Hash, Hasher};
-        let ids = &self.id_stack.borrow();
-        let seed = ids.last().expect("at least self.id should be in the stack");
-        let mut hasher = ahash::AHasher::default();
-        seed.hash(&mut hasher);
-        label.hash(&mut hasher);
+        // let ids = &self.id_stack.borrow();
+        // let seed = ids.last().expect("at least self.id should be in the stack");
+
+        assert!(!self.id_stack.borrow().is_empty());
+
+        let mut hasher = ahash::AHasher::new_with_keys(0, 0);
+
+        for &id in self.id_stack.borrow().iter() {
+            id.hash(&mut hasher);
+        }
+
+        Id::from_hash(&label).hash(&mut hasher);
         Id(hasher.finish().max(1))
     }
 
@@ -1053,7 +1062,10 @@ impl DockTree {
                     match self.nodes[rem_id].kind {
                         DNK::Leaf => {
                             // If the parent root had ALLOW_SINGLE_LEAF, promote the remaining leaf to be the new root.
-                            if self.nodes[parent_id].flags.has(DockNodeFlag::ALLOW_SINGLE_LEAF) {
+                            if self.nodes[parent_id]
+                                .flags
+                                .has(DockNodeFlag::ALLOW_SINGLE_LEAF)
+                            {
                                 // promote rem_id to be the new root, inherit parent's flags and rect
                                 self.nodes[rem_id].parent_id = Id::NULL;
                                 // merge flags so the new root retains parent's special flags

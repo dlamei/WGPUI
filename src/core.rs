@@ -886,7 +886,7 @@ macro_rules! id_type {
 
             pub fn from_hash(h: &impl std::hash::Hash) -> Self {
                 use std::hash::{Hash, Hasher};
-                let mut hasher = ahash::AHasher::default();
+                let mut hasher = ahash::AHasher::new_with_keys(0, 0);
                 h.hash(&mut hasher);
                 Self(hasher.finish())
             }

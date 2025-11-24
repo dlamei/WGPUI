@@ -242,7 +242,7 @@ impl App {
         let main_window = window.id;
         // let mut windows = HashMap::new();
         // windows.insert(main_window, window.clone());
-        Self {
+        let mut app = Self {
             ui: ui::Context::new(wgpu.clone(), window),
             panels: vec![],
             prev_frame_time: Instant::now(),
@@ -250,7 +250,11 @@ impl App {
             mouse_pos: Vec2::NAN,
             wgpu,
             main_window,
-        }
+        };
+
+        app.ui.init();
+        app.reset_layout();
+        app
     }
 
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -362,6 +366,21 @@ impl App {
         }
     }
 
+
+    fn reset_layout(&mut self) {
+        let ui = &mut self.ui;
+        ui.reset_docktree();
+        ui.begin_dockspace();
+        ui.end();
+        let vp = ui.panel_id("##VIEWPORT");
+        let dbg = ui.panel_id("##_DEBUG_PANEL");
+
+        ui.dock_to_dockspace(vp, 1.0, core::Dir::E);
+        ui.dock_to_panel(dbg, vp, 0.3, core::Dir::E);
+
+        ui.update_draworder();
+    }
+
     fn on_update(&mut self, event_loop: &ActiveEventLoop) {
         let ui = &mut self.ui;
         ui.begin_frame();
@@ -379,6 +398,16 @@ impl App {
         if ui.button(&format!("clear panels: {}", self.panels.len())) {
             self.panels.clear();
         }
+
+        if ui.button(&format!("reset docktree")) {
+            ui.reset_docktree();
+        }
+
+        if ui.button(&format!("reset layout")) {
+            self.reset_layout();
+        }
+
+        let ui = &mut self.ui;
         // if ui.button("test button") {
         //     println!("test button pressed");
         // }
@@ -426,13 +455,13 @@ impl App {
         // }
 
         ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
-        ui.begin("Viewport");
+        ui.begin("Viewport##VIEWPORT");
         ui.pop_style();
         ui.end();
 
-        ui.debug_window();
+        ui.debug_panel();
 
-        ui.end_frame(event_loop);
+        ui.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
