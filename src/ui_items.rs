@@ -5,7 +5,8 @@ use crate::{
     ctext,
     mouse::{CursorIcon, MouseBtn},
     rect::Rect,
-    ui::{self, CornerRadii, Id, ItemFlags, TabBar, TextInputFlags, TextInputState},
+    ui::{self, CornerRadii, Id, ItemFlags, TabBar, TextInputFlags, TextInputState, TextureId},
+    gpu,
 };
 
 macro_rules! ui_text {
@@ -16,7 +17,13 @@ macro_rules! ui_text {
 pub(crate) use ui_text;
 
 impl ui::Context {
-    pub fn image(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
+
+    pub fn image(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex: &gpu::Texture) {
+        let tex_id = self.register_texture(tex);
+        self.image_id(size, uv_min, uv_max, tex_id);
+    }
+
+    pub fn image_id(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: TextureId) {
         // let id = self.gen_id(tex_id);
         let id = Id::NULL;
         let rect = self.place_item(id, size);
@@ -323,7 +330,7 @@ impl ui::Context {
 
             let input = &mut self.text_input_states[id];
             input.edit.shape_as_needed(&mut self.font_table.sys(), true);
-            let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.draw.wgpu);
+            let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.wgpu);
             let dim = layout.size();
             // Left-align the editor inside the rail with a small left padding
             let left_padding = rail_pad * 0.5 + 4.0; // extra 4px for breathing room
@@ -503,7 +510,7 @@ impl ui::Context {
 
         input.edit.shape_as_needed(&mut self.font_table.sys(), true);
 
-        let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.draw.wgpu);
+        let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.wgpu);
         let text_dim = layout.size();
 
         let total_h = (text_dim.y).max(self.style.line_height());
@@ -688,7 +695,7 @@ impl ui::Context {
                     key.y_bin = ctext::SubpixelBin::Three;
 
                     let mut cache = self.glyph_cache.borrow_mut();
-                    let wgpu = &self.draw.wgpu;
+                    let wgpu = &self.wgpu;
                     if let Some(mut cached) = cache.get_glyph(key, wgpu) {
                         let pos = cached.meta.pos
                             + Vec2::new(
@@ -751,7 +758,7 @@ impl ui::Context {
                 .draw_rect()
                 .offset(pos)
                 .fill(*color)
-                .texture(1)
+                .texture(TextureId::GLYPH)
                 .uv(g.uv_min, g.uv_max)
         }));
 

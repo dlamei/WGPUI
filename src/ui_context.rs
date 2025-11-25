@@ -8,19 +8,14 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Vertex as VertexTyp,
     core::{
-        ArrVec, Axis, DataMap, Dir, HashMap, HashSet, Instant, RGBA, id_type, stacked_fields_struct,
-    },
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
-    mouse::{Clipboard, CursorIcon, MouseBtn, MouseState},
-    rect::Rect,
-    ui::{
+        id_type, stacked_fields_struct, ArrVec, Axis, DataMap, Dir, HashMap, HashSet, Instant, RGBA
+    }, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, ui::{
         self, CornerRadii, DockNodeFlag, DockNodeKind, DockTree, DrawCallList, DrawList,
-        DrawableRects, FontTable, GlyphCache, Id, IdMap, ItemFlags, MergedDrawLists, NextPanelData,
+        DrawableRects, FontTable, GlyphCache, Id, IdMap, ItemFlags, RenderData, NextPanelData,
         Outline, Panel, PanelAction, PanelFlag, PrevItemData, RootId, ShapedText, Signal,
-        StyleTable, StyleVar, TabBar, TextInputFlags, TextInputState, TextItem, TextItemCache,
-    },
+        StyleTable, StyleVar, TabBar, TextInputFlags, TextInputState, TextItem, TextItemCache, TextureId,
+    }, Vertex as VertexTyp
 };
 
 pub fn is_in_resize_region(r: Rect, pnt: Vec2, thr: f32) -> Option<Dir> {
@@ -168,7 +163,11 @@ pub struct Context {
     pub prev_hot_tabbar_id: Id,
 
     pub window_panel_id: Id,
-    // pub window_panel_titlebar_height: f32,
+
+    // /// registered textures
+    // /// 
+    // /// texture id is defined as the index + 1 in this array, 0 is reserved for white texture
+    // pub texture_reg: Vec<gpu::Texture>,
 
     // some items can only be interacted with while dragging, e.g. sliders
     // just holding down the mouse will not register as a drag, only a press
@@ -197,7 +196,7 @@ pub struct Context {
     pub scroll_speed: f32,
     pub n_draw_calls: usize,
 
-    pub draw: MergedDrawLists,
+    pub draw: RenderData,
     pub glyph_cache: RefCell<GlyphCache>,
     pub text_item_cache: RefCell<TextItemCache>,
     pub font_table: FontTable,
@@ -208,6 +207,8 @@ pub struct Context {
     pub requested_windows: Vec<(Vec2, Vec2)>,
     pub ext_window: Option<Window>,
     pub clipboard: Clipboard,
+
+    pub wgpu: WGPUHandle,
 }
 
 impl Context {
@@ -225,13 +226,15 @@ impl Context {
             glyph_cache.alloc_data(w, h, &data, &wgpu).unwrap()
         };
 
+        // let white_texture = gpu::Texture::create(&wgpu, 1, 1, &[255, 255, 255, 255]);
+
         Self {
             panels: IdMap::new(),
             widget_data: DataMap::new(),
             docktree: DockTree::new(),
             // style: Style::dark(),
             style: dark_theme(),
-            draw: MergedDrawLists::new(glyph_cache.texture.clone(), wgpu),
+            draw: RenderData::new(glyph_cache.texture.clone(), wgpu.clone()),
             current_panel_stack: vec![],
 
             current_tabbar_id: Id::NULL,
@@ -257,8 +260,8 @@ impl Context {
 
             hot_tabbar_id: Id::NULL,
             prev_hot_tabbar_id: Id::NULL,
-
             prev_active_id: Id::NULL,
+
             expect_drag: false,
             // resizing_window_dir: None,
             next: NextPanelData::default(),
@@ -294,6 +297,8 @@ impl Context {
             requested_windows: Vec::new(),
             ext_window: None,
             clipboard: Clipboard::new(),
+
+            wgpu,
         }
     }
 
@@ -314,9 +319,9 @@ impl Context {
     }
 
     pub fn resize_window(&mut self, id: WindowId, x: u32, y: u32) {
-        let wgpu = self.draw.wgpu.clone();
+        let wgpu = self.wgpu.clone();
         self.get_mut_window(id).resize(x, y, &wgpu.device);
-        // self.window.resize(x, y, &self.draw.wgpu.device)
+        // self.window.resize(x, y, &self.wgpu.device)
     }
 
     /// apply changes to the cursor icon
@@ -419,18 +424,15 @@ impl Context {
         // so parent panels can handle scrolling.
         if !self.prev_hot_tabbar_id.is_null() {
             if let Some(tb) = self.widget_data.get_mut::<ui::TabBar>(&self.prev_hot_tabbar_id) {
-                // Use vertical mouse wheel to scroll horizontally: subtract delta.y
                 let scroll_amount = delta.y;
                 let max_scroll = (tb.total_width - tb.bar_rect.width()).max(0.0);
                 if max_scroll > 0.0 {
                     let new_offset = (tb.scroll_offset - scroll_amount).clamp(0.0, max_scroll);
-                    // If the offset actually changes, consume the event; otherwise, fall through.
                     if (new_offset - tb.scroll_offset).abs() > f32::EPSILON {
                         tb.scroll_offset = new_offset;
                         return;
                     }
                 }
-                // else: nothing to scroll, fall through
             }
         }
         let mut target = if !self.hot_panel_id.is_null() {
@@ -564,6 +566,24 @@ impl Context {
         } else {
             self.get_current_panel().gen_local_id(label)
         }
+    }
+
+    pub fn register_texture(&mut self, tex: &gpu::Texture) -> TextureId {
+        if let Some(idx) = self.draw.texture_reg.iter().position(|t| t == tex) {
+            return TextureId(idx as u64 + 1);
+        }
+
+        let id = self.draw.texture_reg.len();
+        self.draw.texture_reg.push(tex.clone());
+        TextureId(id as u64 + 1)
+    }
+
+    pub fn texture_id(&self, tex: &gpu::Texture) -> TextureId {
+        if let Some(idx) = self.draw.texture_reg.iter().position(|t| t == tex) {
+            return TextureId(idx as u64);
+        }
+
+        panic!("texture not registered");
     }
 
     pub fn is_in_draw_order(&self, id: RootId) -> bool {
@@ -1205,7 +1225,7 @@ impl Context {
                     Rect::from_min_max(Vec2::splat(pad), Vec2::splat(titlebar_height - pad))
                         .draw_rect()
                         .uv(self.icon_uv.min, self.icon_uv.max)
-                        .texture(1),
+                        .texture(TextureId::GLYPH),
                 );
                 // self.draw(|list| {
                 //     list.rect(Vec2::splat(pad), Vec2::splat(titlebar_height - pad))
@@ -3199,7 +3219,7 @@ impl Context {
                 let size = uv_max - uv_min;
                 let scale = (avail.x / size.x).min(avail.y / size.y);
                 let fitted_size = size * scale;
-                self.image(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, 1);
+                self.image_id(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, TextureId::GLYPH);
             }
         }
 
@@ -3332,7 +3352,7 @@ impl Context {
         //         .create_window(winit::window::WindowAttributes::default())
         //         .unwrap();
         //     let mut window =
-        //         Window::new(winit_window, size.x as u32, size.y as u32, &self.draw.wgpu);
+        //         Window::new(winit_window, size.x as u32, size.y as u32, &self.wgpu);
         //     window.set_window_size(size.x as u32, size.y as u32);
         //     window.set_window_pos(*pos);
         //     self.ext_window = Some(window);
@@ -3400,7 +3420,7 @@ impl Context {
         let mut font_table = self.font_table.clone();
 
         let shaped_text = if !text_cache.contains_key(&itm) {
-            let shaped_text = itm.layout(&mut font_table, &mut glyph_cache, &self.draw.wgpu);
+            let shaped_text = itm.layout(&mut font_table, &mut glyph_cache, &self.wgpu);
             text_cache.entry(itm).or_insert(shaped_text)
         } else {
             text_cache.get(&itm).unwrap()
@@ -3428,7 +3448,7 @@ impl Context {
             self.draw(
                 Rect::from_min_max(min, max)
                     .draw_rect()
-                    .texture(1)
+                    .texture(TextureId::GLYPH)
                     .uv(uv_min, uv_max),
             );
         }
@@ -3449,7 +3469,7 @@ impl Context {
                         contents: bytemuck::cast_slice(&draw_buff.vtx_alloc),
                     });
         } else {
-            self.draw.wgpu.queue.write_buffer(
+            self.wgpu.queue.write_buffer(
                 &self.draw.gpu_vertices,
                 0,
                 bytemuck::cast_slice(&draw_buff.vtx_alloc),
@@ -3469,7 +3489,7 @@ impl Context {
                         contents: bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
                     });
         } else {
-            self.draw.wgpu.queue.write_buffer(
+            self.wgpu.queue.write_buffer(
                 &self.draw.gpu_indices,
                 0,
                 bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
@@ -3477,33 +3497,33 @@ impl Context {
         }
     }
 
-    pub fn build_draw_list(draw_buff: &mut DrawCallList, draw_list: &DrawList, screen_size: Vec2) {
-        // let draw_list = self.panels[id].draw_list.borrow();
-        // println!("draw_list:\n{:#?}", draw_list);
+    // pub fn build_draw_list(draw_buff: &mut DrawCallList, draw_list: &DrawList, screen_size: Vec2) {
+    //     // let draw_list = self.panels[id].draw_list.borrow();
+    //     // println!("draw_list:\n{:#?}", draw_list);
 
-        // println!("{:#?}", draw_list);
+    //     // println!("{:#?}", draw_list);
 
-        for cmd in draw_list.commands().iter() {
-            let vtx = &draw_list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
-            let idx = &draw_list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
+    //     for cmd in draw_list.commands().iter() {
+    //         let vtx = &draw_list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
+    //         let idx = &draw_list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
 
-            let mut curr_clip = draw_buff.current_clip_rect();
-            curr_clip.min = curr_clip.min.max(Vec2::ZERO);
-            curr_clip.max = curr_clip.max.min(screen_size);
+    //         let mut curr_clip = draw_buff.current_clip_rect();
+    //         curr_clip.min = curr_clip.min.max(Vec2::ZERO);
+    //         curr_clip.max = curr_clip.max.min(screen_size);
 
-            let mut clip = cmd.clip_rect;
-            clip.min = clip.min.max(Vec2::ZERO);
-            clip.max = clip.max.min(screen_size);
+    //         let mut clip = cmd.clip_rect;
+    //         clip.min = clip.min.max(Vec2::ZERO);
+    //         clip.max = clip.max.min(screen_size);
 
-            // draw_buff.set_clip_rect(cmd.clip_rect);
-            if cmd.clip_rect_used {
-                draw_buff.set_clip_rect(cmd.clip_rect);
-            } else if !draw_buff.current_clip_rect().contains_rect(clip) {
-                draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, screen_size));
-            }
-            draw_buff.push(vtx, idx);
-        }
-    }
+    //         // draw_buff.set_clip_rect(cmd.clip_rect);
+    //         if cmd.clip_rect_used {
+    //             draw_buff.set_clip_rect(cmd.clip_rect);
+    //         } else if !draw_buff.current_clip_rect().contains_rect(clip) {
+    //             draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, screen_size));
+    //         }
+    //         draw_buff.push(vtx, idx);
+    //     }
+    // }
 
     pub fn build_debug_draw_list(
         draw_buff: &mut DrawCallList,
@@ -3536,9 +3556,9 @@ impl Context {
 
     pub fn build_draw_data(&mut self) {
         let order = self.get_panels_in_order();
-        let panels = &self.panels;
-        let draw_buff = &mut self.draw.call_list;
-        draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
+        // let panels = &self.panels;
+        // let draw_buff = &mut self.draw.call_list;
+        self.draw.call_list.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
 
         for id in order {
             let p = &self.panels[id];
@@ -3547,8 +3567,11 @@ impl Context {
                 continue;
             }
 
-            Self::build_draw_list(draw_buff, &p.drawlist, self.draw.screen_size);
-            Self::build_draw_list(draw_buff, &p.drawlist_over, self.draw.screen_size);
+            // Self::build_draw_list(draw_buff, &p.drawlist, self.draw.screen_size);
+
+            self.draw.push_drawlist(&p.drawlist);
+            self.draw.push_drawlist(&p.drawlist_over);
+            // Self::build_draw_list(&mut self.draw.call_list, &p.drawlist_over, self.draw.screen_size);
         }
         self.upload_draw_data();
 

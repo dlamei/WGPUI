@@ -40,7 +40,7 @@ impl Texture {
         &self.data.1
     }
 
-    pub fn create_with_usage(
+    pub fn create_empty_with_usage(
         wgpu: &WGPU,
         width: u32,
         height: u32,
@@ -69,7 +69,7 @@ impl Texture {
     }
 
     pub fn create_render_texture(wgpu: &WGPU, width: u32, height: u32) -> Self {
-        Self::create_with_usage(
+        Self::create_empty_with_usage(
             wgpu,
             width,
             height,
@@ -79,10 +79,10 @@ impl Texture {
         )
     }
 
-    pub fn create(wgpu: &WGPU, width: u32, height: u32, data: &[u8]) -> Self {
+    pub fn cretae_with_usage(wgpu: &WGPU, width: u32, height: u32, usage: wgpu::TextureUsages, data: &[u8]) -> Self {
         assert_eq!((width * height * 4) as usize, data.len());
 
-        let texture = Self::create_with_usage(wgpu, width, height, wgpu::TextureUsages::COPY_DST);
+        let texture = Self::create_empty_with_usage(wgpu, width, height, usage | wgpu::TextureUsages::COPY_DST);
 
         wgpu.queue.write_texture(
             wgpu::TexelCopyTextureInfoBase {
@@ -105,6 +105,16 @@ impl Texture {
         );
 
         texture
+    }
+
+    pub fn create(wgpu: &WGPU, width: u32, height: u32, data: &[u8]) -> Self {
+        Self::cretae_with_usage(
+            wgpu,
+            width,
+            height,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+            data,
+        )
     }
 
     pub fn width(&self) -> u32 {

@@ -32,6 +32,11 @@ pub use crate::ui_panel::*;
 id_type!(Id);
 id_type!(TextureId);
 
+impl TextureId {
+    pub const WHITE: Self = Self::NULL;
+    pub const GLYPH: Self = Self(1);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RootId {
     Panel(Id),
@@ -1063,7 +1068,7 @@ sig_fn!(released => RELEASED_LEFT);
 /// A single draw command
 #[derive(Debug, Clone, Copy)]
 pub struct DrawCmd {
-    pub texture_id: u32,
+    pub texture_id: TextureId,
     pub vtx_offset: usize,
     pub vtx_count: usize,
     pub idx_offset: usize,
@@ -1076,7 +1081,7 @@ pub struct DrawCmd {
 impl Default for DrawCmd {
     fn default() -> Self {
         Self {
-            texture_id: 0,
+            texture_id: TextureId::NULL,
             vtx_offset: 0,
             vtx_count: 0,
             idx_offset: 0,
@@ -1444,13 +1449,13 @@ impl DrawListData {
         cmd
     }
 
-    pub fn push_texture(&mut self, tex_id: u32) {
-        if tex_id == 0 {
+    pub fn push_texture(&mut self, tex_id: TextureId) {
+        if tex_id == TextureId::WHITE {
             return;
         }
         let cmd = self.current_draw_cmd();
 
-        if cmd.texture_id == 0 {
+        if cmd.texture_id == TextureId::WHITE {
             cmd.texture_id = tex_id;
             return;
         }
@@ -1489,7 +1494,7 @@ impl DrawListData {
             max,
             uv_min: Vec2::ZERO,
             uv_max: Vec2::ONE,
-            texture_id: 0,
+            texture_id: TextureId::WHITE,
             fill: RGBA::ZERO,
             outline: Outline::none(),
             corners: CornerRadii::all(radius),
@@ -1717,7 +1722,7 @@ impl DrawListData {
         mut max: Vec2,
         uv_min: Vec2,
         uv_max: Vec2,
-        tex_id: u32,
+        tex_id: TextureId,
         tint: RGBA,
         outline: Outline,
         corners: CornerRadii,
@@ -1761,7 +1766,7 @@ impl DrawListData {
         let (vtx, idx) = tessellate_convex_fill(&self.path, tint, true);
         self.push_vtx_idx(&vtx, &idx);
         let end = start + vtx.len();
-        if tex_id != 0 {
+        if tex_id != TextureId::WHITE {
             self.distribute_uvs(start, end, min, max, uv_min, uv_max, true, tex_id);
         }
 
@@ -1780,25 +1785,27 @@ impl DrawListData {
         uv_min: Vec2,
         uv_max: Vec2,
         color: RGBA,
-        tex_id: u32,
+        tex_id: TextureId,
     ) {
         const QUAD_IDX: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+        let raw_tex_id = tex_id.0 as u32;
 
         let vertices = [
             Vertex::new(
                 Vec2::new(min.x, max.y),
                 color,
                 Vec2::new(uv_min.x, uv_max.y),
-                tex_id,
+                raw_tex_id,
             ),
-            Vertex::new(max, color, uv_max, tex_id),
+            Vertex::new(max, color, uv_max, raw_tex_id),
             Vertex::new(
                 Vec2::new(max.x, min.y),
                 color,
                 Vec2::new(uv_max.x, uv_min.y),
-                tex_id,
+                raw_tex_id,
             ),
-            Vertex::new(min, color, uv_min, tex_id),
+            Vertex::new(min, color, uv_min, raw_tex_id),
         ];
 
         self.push_vtx_idx(&vertices, &QUAD_IDX);
@@ -1874,11 +1881,13 @@ impl DrawListData {
         uv_a: Vec2,
         uv_b: Vec2,
         clamp: bool,
-        tex_id: u32,
+        tex_id: TextureId,
     ) {
         if vert_end <= vert_start || vert_end > self.vtx_buffer.len() {
             return;
         }
+
+        let raw_tex_id = tex_id.0 as u32;
 
         let size = b - a;
         let uv_size = uv_b - uv_a;
@@ -1908,7 +1917,7 @@ impl DrawListData {
                 uv.y = uv.y.clamp(min_uv.y, max_uv.y);
             }
             vert.uv = uv;
-            vert.tex = tex_id;
+            vert.tex = raw_tex_id;
         }
     }
 
@@ -1918,12 +1927,12 @@ impl DrawListData {
         max: Vec2,
         uv_min: Vec2,
         uv_max: Vec2,
-        tex_id: u32,
+        tex_id: TextureId,
         tint: RGBA,
         outline: Outline,
     ) {
         // Fast path: opaque solid fill with outline (no texture)
-        if tex_id == 0 && tint.a == 1.0 && outline.width > 0.0 {
+        if tex_id == TextureId::WHITE && tint.a == 1.0 && outline.width > 0.0 {
             self.add_solid_rect_with_outline(min, max, uv_min, uv_max, tint, outline);
             return;
         }
@@ -1969,7 +1978,7 @@ impl DrawListData {
                 outline_uvs.0,
                 outline_uvs.1,
                 outline.col,
-                0,
+                TextureId::WHITE,
             );
         }
 
@@ -1983,7 +1992,7 @@ impl DrawListData {
                 fill_uvs.0,
                 fill_uvs.1,
                 tint,
-                0,
+                TextureId::WHITE,
             );
         }
     }
@@ -1994,7 +2003,7 @@ impl DrawListData {
         max: Vec2,
         uv_min: Vec2,
         uv_max: Vec2,
-        tex_id: u32,
+        tex_id: TextureId,
         tint: RGBA,
     ) {
         let clip = self.clip_rect;
@@ -2015,7 +2024,7 @@ impl DrawListData {
             tex_id,
         );
 
-        if tex_id != 0 {
+        if tex_id != TextureId::WHITE {
             let end = start + 4;
             self.distribute_uvs(
                 start,
@@ -2312,7 +2321,7 @@ pub struct DrawRect {
     pub max: Vec2,
     pub uv_min: Vec2,
     pub uv_max: Vec2,
-    pub texture_id: u32,
+    pub texture_id: TextureId,
     pub fill: RGBA,
     pub outline: Outline,
     pub corners: CornerRadii,
@@ -2330,7 +2339,7 @@ impl ShapedText {
             rects.push(
                 DrawRect::new(min, max)
                     .fill(col)
-                    .texture(1)
+                    .texture(TextureId::GLYPH)
                     .uv(uv_min, uv_max),
             );
             // DrawRect::new(min, max)
@@ -2389,7 +2398,7 @@ impl DrawRect {
             max,
             uv_min: Vec2::ZERO,
             uv_max: Vec2::ONE,
-            texture_id: 0,
+            texture_id: TextureId::WHITE,
             fill: RGBA::ZERO,
             outline: Outline::none(),
             corners: CornerRadii::zero(),
@@ -2428,7 +2437,7 @@ impl DrawRect {
     //     self
     // }
 
-    pub fn texture(mut self, id: u32) -> Self {
+    pub fn texture(mut self, id: TextureId) -> Self {
         self.texture_id = id;
         if self.fill.a == 0.0 {
             self.fill = RGBA::WHITE
@@ -2878,7 +2887,7 @@ pub mod phosphor_font {
 
 pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 8;
 
-pub struct MergedDrawLists {
+pub struct RenderData {
     pub gpu_vertices: wgpu::Buffer,
     pub gpu_indices: wgpu::Buffer,
 
@@ -2888,11 +2897,15 @@ pub struct MergedDrawLists {
     pub antialias: bool,
 
     pub glyph_texture: gpu::Texture,
+    /// registered textures
+    /// 
+    /// texture id is defined as the index + 1 in this array, 0 is reserved for white texture
+    pub texture_reg: Vec<gpu::Texture>,
 
     pub wgpu: WGPUHandle,
 }
 
-impl MergedDrawLists {
+impl RenderData {
     /// 2^16
     pub const MAX_VERTEX_COUNT: u64 = 65_536;
     // 2^17
@@ -2920,6 +2933,8 @@ impl MergedDrawLists {
             mapped_at_creation: false,
         });
 
+        let texture_reg = vec![glyph_texture.clone()];
+
         Self {
             gpu_vertices,
             gpu_indices,
@@ -2930,7 +2945,31 @@ impl MergedDrawLists {
                 Self::MAX_INDEX_COUNT as usize,
             ),
             glyph_texture,
+            texture_reg,
             wgpu,
+        }
+    }
+
+    pub fn push_drawlist(&mut self, list: &DrawList) {
+        for cmd in list.commands().iter(){
+            let vtx = &list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
+            let idx = &list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
+
+            let mut curr_clip = self.call_list.current_clip_rect();
+            curr_clip.min = curr_clip.min.max(Vec2::ZERO);
+            curr_clip.max = curr_clip.max.min(self.screen_size);
+
+            let mut clip = cmd.clip_rect;
+            clip.min = clip.min.max(Vec2::ZERO);
+            clip.max = clip.max.min(self.screen_size);
+
+            // draw_buff.set_clip_rect(cmd.clip_rect);
+            if cmd.clip_rect_used {
+                self.call_list.set_clip_rect(cmd.clip_rect);
+            } else if !self.call_list.current_clip_rect().contains_rect(clip) {
+                self.call_list.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.screen_size));
+            }
+            self.call_list.push(vtx, idx); 
         }
     }
 
@@ -2939,7 +2978,7 @@ impl MergedDrawLists {
     }
 }
 
-impl RenderPassHandle for MergedDrawLists {
+impl RenderPassHandle for RenderData {
     const LABEL: &'static str = "draw_list_render_pass";
 
     fn n_render_passes(&self) -> u32 {
@@ -3051,7 +3090,7 @@ pub struct DrawCall {
     pub idx_ptr: usize,
     pub n_vtx: usize,
     pub n_idx: usize,
-    pub textures: ArrVec<TextureId, MAX_N_TEXTURES_PER_DRAW_CALL>,
+    pub textures: ArrVec<u32, MAX_N_TEXTURES_PER_DRAW_CALL>,
 }
 
 impl DrawCall {
