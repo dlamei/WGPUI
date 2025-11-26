@@ -1,9 +1,7 @@
 use cosmic_text as ctext;
 use glam::{Mat4, UVec2, Vec2};
 use std::{
-    cell::{Ref, RefCell},
-    fmt, hash,
-    rc::Rc,
+    cell::{Ref, RefCell}, char::MAX, fmt, hash, rc::Rc
 };
 use wgpu::util::DeviceExt;
 
@@ -2992,6 +2990,8 @@ impl RenderData {
             } else if !self.call_list.current_clip_rect().contains_rect(clip) {
                 self.call_list.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.screen_size));
             }
+            
+            self.call_list.push_texture(cmd.texture_id);
             self.call_list.push(vtx, idx); 
         }
     }
@@ -3078,7 +3078,19 @@ impl RenderPassHandle for RenderData {
 
         let global_uniform = GlobalUniform::new(self.screen_size, proj);
 
-        let bind_group = build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
+        // let bind_group = build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
+        let mut tex_views = self.call_list.calls[i as usize]
+            .textures
+            .iter()
+            .map(|&tex_id| self.texture_reg[tex_id as usize - 1].view().clone())
+            .collect::<Vec<_>>();
+
+        while tex_views.len() < 3 {
+            tex_views.push(self.glyph_texture.view().clone());
+        }
+
+
+        let bind_group = build_bind_group(global_uniform, &tex_views, wgpu);
 
         let (verts, indxs, clip) = self.call_list.get_draw_call_data(i).unwrap();
 
@@ -3193,6 +3205,53 @@ impl DrawCallList {
         })
     }
 
+
+    pub fn push_texture(&mut self, texture_id: TextureId) {
+        let raw_tex_id = texture_id.0 as u32;
+        if self.calls.is_empty() {
+            self.calls.push(DrawCall::new());
+        }
+
+        let mut c = self.calls.last_mut().unwrap();
+
+        // skip if texture is white (always bound) or already present
+        if texture_id == TextureId::WHITE || c.textures.iter().any(|&id| id == raw_tex_id) {
+            return;
+        }
+
+        if c.textures.len() >= MAX_N_TEXTURES_PER_DRAW_CALL {
+            let prev_clip = self.calls.last().unwrap().clip_rect;
+            self.calls.push(DrawCall {
+                clip_rect: prev_clip,
+                vtx_ptr: self.vtx_ptr,
+                idx_ptr: self.idx_ptr,
+                n_vtx: 0,
+                n_idx: 0,
+                textures: ArrVec::new(),
+            });
+
+            c = self.calls.last_mut().unwrap();
+        }
+
+        c.textures.push(raw_tex_id);
+    }
+
+    fn texture_binding(&self, raw_tex_id: u32) -> u32 {
+        if raw_tex_id == 0 {
+            return 0;
+        }
+
+        let c = self.calls.last().unwrap();
+        for (i, &id) in c.textures.iter().enumerate() {
+            if id == raw_tex_id {
+                return (i + 1) as u32;
+            }
+        }
+
+        panic!("texture id {} not found in current draw call", raw_tex_id);
+    }
+
+    // assumes all vertices use the same texture (or no texture)
     pub fn push(&mut self, vtx: &[Vertex], idx: &[u32]) {
         if vtx.len() > self.max_vtx_per_chunk || idx.len() > self.max_idx_per_chunk {
             panic!(
@@ -3214,13 +3273,14 @@ impl DrawCallList {
             || c.n_idx + idx.len() > self.max_idx_per_chunk
         {
             let prev_clip = self.calls.last().unwrap().clip_rect;
+            let prev_textures = self.calls.last().unwrap().textures;
             self.calls.push(DrawCall {
                 clip_rect: prev_clip,
                 vtx_ptr: self.vtx_ptr,
                 idx_ptr: self.idx_ptr,
                 n_vtx: 0,
                 n_idx: 0,
-                textures: ArrVec::new(),
+                textures: prev_textures,
             });
         }
 
@@ -3234,8 +3294,28 @@ impl DrawCallList {
         if self.idx_alloc.len() < self.idx_ptr + idx.len() {
             self.idx_alloc.resize(self.idx_ptr + idx.len(), 0);
         }
+        let mut texture_id = 0;
+        // copy vertices, remap texture ids
+        self.vtx_alloc[self.vtx_ptr..self.vtx_ptr + vtx.len()]
+            .iter_mut()
+            .zip(vtx.iter())
+            .for_each(|(dst, &src)| {
+            if src.tex != 0 && texture_id == 0 {
+                texture_id = texture_id.max(src.tex);
+            }
 
-        self.vtx_alloc[self.vtx_ptr..self.vtx_ptr + vtx.len()].copy_from_slice(vtx);
+            if src.tex != 0 && texture_id != 0 && src.tex != texture_id {
+                panic!("Mixing multiple textures in a single draw call is not supported. {} != {}", texture_id, src.tex);
+            }
+
+            *dst = src;
+            dst.tex = if src.tex == 0 {
+                0
+            } else {
+                c.textures.iter().position(|&id| id == src.tex).unwrap() as u32 + 1
+            };
+            });
+
         self.idx_alloc[self.idx_ptr..self.idx_ptr + idx.len()]
             .iter_mut()
             .zip(idx.iter())
@@ -3330,15 +3410,37 @@ impl gpu::ShaderHandle for UiShader {
 
             @group(0) @binding(1)
             var samp: sampler;
+
             @group(0) @binding(2)
-            var texture: texture_2d<f32>;
+            var tex1: texture_2d<f32>;
+            @group(0) @binding(3)
+            var tex2: texture_2d<f32>;
+            @group(0) @binding(4)
+            var tex3: texture_2d<f32>;
 
 
             @fragment
             fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-                let c0 = textureSample(texture, samp, in.uv) * in.color;
-                let c1 = in.color;
-                return select(c0, c1, in.tex != 1);
+                
+                if in.tex == 0 {
+                    return in.color;
+                } else if in.tex == 1 {
+                    let c0 = textureSample(tex1, samp, in.uv) * in.color;
+                    return c0;
+                } else if in.tex == 2 {
+                    let c0 = textureSample(tex2, samp, in.uv) * in.color;
+                    return c0;
+                } else if in.tex == 3 {
+                    let c0 = textureSample(tex3, samp, in.uv) * in.color;
+                    return c0;
+                } else {
+                    // TODO: assert in debug mode?
+                    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+                }
+
+                //let c0 = textureSample(texture, samp, in.uv) * in.color;
+                //let c1 = in.color;
+                //return select(c0, c1, in.tex != 1);
             }
             "#;
 
@@ -3361,9 +3463,32 @@ impl gpu::ShaderHandle for UiShader {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            // texture
+            // texture 1
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+
+            // texture 2
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // texture 3
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -3453,47 +3578,49 @@ impl GlobalUniform {
         }
     }
 
-    pub fn build_bind_group(&self, wgpu: &WGPU) -> wgpu::BindGroup {
-        let global_uniform = wgpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rect_global_uniform_buffer"),
-                contents: bytemuck::cast_slice(&[*self]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+    // pub fn build_bind_group(&self, wgpu: &WGPU) -> wgpu::BindGroup {
+    //     let global_uniform = wgpu
+    //         .device
+    //         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //             label: Some("rect_global_uniform_buffer"),
+    //             contents: bytemuck::cast_slice(&[*self]),
+    //             usage: wgpu::BufferUsages::UNIFORM,
+    //         });
 
-        let global_bind_group_layout =
-            wgpu.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                    label: Some("global_bind_group_layout"),
-                });
+    //     let global_bind_group_layout =
+    //         wgpu.device
+    //             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    //                 entries: &[wgpu::BindGroupLayoutEntry {
+    //                     binding: 0,
+    //                     visibility: wgpu::ShaderStages::VERTEX,
+    //                     ty: wgpu::BindingType::Buffer {
+    //                         ty: wgpu::BufferBindingType::Uniform,
+    //                         has_dynamic_offset: false,
+    //                         min_binding_size: None,
+    //                     },
+    //                     count: None,
+    //                 }],
+    //                 label: Some("global_bind_group_layout"),
+    //             });
 
-        wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("global_bind_group"),
-            layout: &global_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: global_uniform.as_entire_binding(),
-            }],
-        })
-    }
+    //     wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    //         label: Some("global_bind_group"),
+    //         layout: &global_bind_group_layout,
+    //         entries: &[wgpu::BindGroupEntry {
+    //             binding: 0,
+    //             resource: global_uniform.as_entire_binding(),
+    //         }],
+    //     })
+    // }
 }
 
 pub fn build_bind_group(
     glob: GlobalUniform,
-    tex_view: &wgpu::TextureView,
+    tex_views: &[wgpu::TextureView],
     wgpu: &WGPU,
 ) -> wgpu::BindGroup {
+    assert!(tex_views.len() == MAX_N_TEXTURES_PER_DRAW_CALL);
+
     let global_uniform = wgpu
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3521,9 +3648,31 @@ pub fn build_bind_group(
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
-        // texture
+        // texture 1
         wgpu::BindGroupLayoutEntry {
             binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        // texture 2
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        // texture 3
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -3564,7 +3713,15 @@ pub fn build_bind_group(
         },
         wgpu::BindGroupEntry {
             binding: 2,
-            resource: wgpu::BindingResource::TextureView(tex_view),
+            resource: wgpu::BindingResource::TextureView(&tex_views[0]),
+        },
+        wgpu::BindGroupEntry {
+            binding: 3,
+            resource: wgpu::BindingResource::TextureView(&tex_views[1]),
+        },
+        wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::TextureView(&tex_views[2]),
         },
     ];
 

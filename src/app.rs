@@ -234,6 +234,8 @@ pub struct App {
     pub wgpu: WGPUHandle,
     pub main_window: WindowId,
     // pub windows: HashMap<WindowId, Window>,
+
+    pub dbg_tex: [gpu::Texture; 4],
 }
 
 impl App {
@@ -242,6 +244,16 @@ impl App {
         let main_window = window.id;
         // let mut windows = HashMap::new();
         // windows.insert(main_window, window.clone());
+
+        let dbg_tex = [0; 4].map(|_| {
+            gpu::Texture::random(
+                &wgpu,
+                16,
+                16,
+                 wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        });
+
         let mut app = Self {
             ui: ui::Context::new(wgpu.clone(), window),
             panels: vec![],
@@ -250,6 +262,7 @@ impl App {
             mouse_pos: Vec2::NAN,
             wgpu,
             main_window,
+            dbg_tex,
         };
 
         app.ui.init();
@@ -387,6 +400,10 @@ impl App {
 
         ui.begin_ex("Debug", ui::PanelFlag::NO_DOCK_TARGET | ui::PanelFlag::NO_DOCKING);
         ui.set_current_panel_min_size(|prev, full, content| full);
+
+        for tex in &self.dbg_tex {
+            ui.image(Vec2::splat(64.0), Vec2::ZERO, Vec2::ONE, tex);
+        }
 
         if ui.button("create panel") {
             static mut PANELS_COUNT: u32 = 0;

@@ -596,6 +596,22 @@ pub struct ArrVec<T, const N: usize> {
     count: usize,
 }
 
+// impl<T, const N: usize> Drop for ArrVec<T, N> {
+//     fn drop(&mut self) {
+//         for i in 0..self.count {
+//             unsafe {
+//                 self.data[i].assume_init_drop();
+//             }
+//         }
+//     }
+// }
+
+impl<T, const N: usize> AsRef<[T]> for ArrVec<T, N> {
+    fn as_ref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
 pub struct ArrVecIter<'a, T, const N: usize> {
     vec: &'a ArrVec<T, N>,
     index: usize,
@@ -683,6 +699,10 @@ impl<T, const N: usize> ArrVec<T, N> {
         N
     }
 
+    pub fn is_full(&self) -> bool {
+        self.count == N
+    }
+
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -739,6 +759,30 @@ impl<T, const N: usize> ArrVec<T, N> {
             index: 0,
         }
     }
+
+    pub fn clear(&mut self) {
+        for i in 0..self.count {
+            unsafe {
+                self.data[i].assume_init_drop();
+            }
+        }
+        self.count = 0;
+    }
+
+    // pub fn map<F, U>(&self, mut f: F) -> ArrVec<U, N>
+    // where
+    //     F: FnMut(&T) -> U,
+    // {
+    //     let mut new_vec = ArrVec::<U, N>::new();
+    //     for i in 0..self.count {
+    //         unsafe {
+    //             new_vec.push(f(self.data[i].assume_init_ref()));
+    //         }
+    //     }
+    //     new_vec
+    // }
+    
+
 }
 
 impl<T, const N: usize> ArrVec<T, N>
