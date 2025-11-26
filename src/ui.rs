@@ -2908,7 +2908,7 @@ pub mod phosphor_font {
 // BEGIN RENDER
 //---------------------------------------------------------------------------------------
 
-pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 8;
+pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 3;
 
 pub struct RenderData {
     pub gpu_vertices: wgpu::Buffer,
@@ -3005,71 +3005,71 @@ impl RenderPassHandle for RenderData {
     const LABEL: &'static str = "draw_list_render_pass";
 
     fn n_render_passes(&self) -> u32 {
-        // self.call_list.calls.len() as u32
-        1
+        self.call_list.calls.len() as u32
+        // 1
     }
 
     fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
-        // self.draw_multiple(rpass, wgpu, 0);
+        self.draw_multiple(rpass, wgpu, 0);
 
-        let proj =
-            Mat4::orthographic_lh(0.0, self.screen_size.x, self.screen_size.y, 0.0, -1.0, 1.0);
+        // let proj =
+        //     Mat4::orthographic_lh(0.0, self.screen_size.x, self.screen_size.y, 0.0, -1.0, 1.0);
 
-        let global_uniform = GlobalUniform::new(self.screen_size, proj);
+        // let global_uniform = GlobalUniform::new(self.screen_size, proj);
 
-        let bind_group = build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
+        // let bind_group = build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
 
-        // if self.call_list.vtx_alloc.len() * std::mem::size_of::<Vertex>() >= self.gpu_vertices.size() as usize {
-        //     self.gpu_vertices = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //         label: Some("draw_list_vertex_buffer"),
-        //         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-        //         contents: bytemuck::cast_slice(&self.call_list.vtx_alloc),
-        //     });
-        // } else {
-        //     wgpu.queue
-        //         .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(&self.call_list.vtx_alloc));
+        // // if self.call_list.vtx_alloc.len() * std::mem::size_of::<Vertex>() >= self.gpu_vertices.size() as usize {
+        // //     self.gpu_vertices = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // //         label: Some("draw_list_vertex_buffer"),
+        // //         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+        // //         contents: bytemuck::cast_slice(&self.call_list.vtx_alloc),
+        // //     });
+        // // } else {
+        // //     wgpu.queue
+        // //         .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(&self.call_list.vtx_alloc));
+        // // }
+
+        // // if self.call_list.idx_alloc.len() * std::mem::size_of::<Vertex>() >= self.gpu_indices.size() as usize {
+        // //     self.gpu_indices = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // //         label: Some("draw_list_index_buffer"),
+        // //         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+        // //         contents: bytemuck::cast_slice(&self.call_list.idx_alloc),
+        // //     });
+        // // } else {
+        // //     wgpu.queue
+        // //         .write_buffer(&self.gpu_indices, 0, bytemuck::cast_slice(&self.call_list.idx_alloc));
+        // // }
+
+        // // let (verts, indxs, clip) = self.call_list.get_draw_call_data(i).unwrap();
+        // let mut i = 0;
+        // // println!("n_calls: {}", self.call_list.calls.len());
+        // for call in &self.call_list.calls {
+        //     // i += 1;
+
+        //     // if i != 2 && self.call_list.calls.len() == 3 {
+        //     //     continue
+        //     // }
+        //     let clip = call.clip_rect;
+        //     rpass.set_bind_group(0, &bind_group, &[]);
+        //     rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
+        //     rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
+        //     rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
+
+        //     let target_size = self.screen_size.floor().as_uvec2();
+        //     let clip_min = clip.min.as_uvec2().max(UVec2::ZERO).min(target_size);
+        //     let clip_max = clip.max.as_uvec2().max(clip_min).min(target_size);
+        //     let clip_size = clip_max - clip_min;
+
+        //     // let clip_min = clip.min.as_uvec2().clamp(Vec2::ZERO, target_size);
+        //     // let clip_size = clip.size().as_uvec2().clamp(Vec2::ZERO, target_size);
+        //     rpass.set_scissor_rect(clip_min.x, clip_min.y, clip_size.x, clip_size.y);
+
+        //     let idx_offset = call.idx_ptr as u32;
+        //     let vtx_offset = call.vtx_ptr as i32;
+        //     let n_idx = call.n_idx as u32;
+        //     rpass.draw_indexed(idx_offset..idx_offset + n_idx, vtx_offset, 0..1);
         // }
-
-        // if self.call_list.idx_alloc.len() * std::mem::size_of::<Vertex>() >= self.gpu_indices.size() as usize {
-        //     self.gpu_indices = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //         label: Some("draw_list_index_buffer"),
-        //         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
-        //         contents: bytemuck::cast_slice(&self.call_list.idx_alloc),
-        //     });
-        // } else {
-        //     wgpu.queue
-        //         .write_buffer(&self.gpu_indices, 0, bytemuck::cast_slice(&self.call_list.idx_alloc));
-        // }
-
-        // let (verts, indxs, clip) = self.call_list.get_draw_call_data(i).unwrap();
-        let mut i = 0;
-        // println!("n_calls: {}", self.call_list.calls.len());
-        for call in &self.call_list.calls {
-            // i += 1;
-
-            // if i != 2 && self.call_list.calls.len() == 3 {
-            //     continue
-            // }
-            let clip = call.clip_rect;
-            rpass.set_bind_group(0, &bind_group, &[]);
-            rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
-            rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
-            rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
-
-            let target_size = self.screen_size.floor().as_uvec2();
-            let clip_min = clip.min.as_uvec2().max(UVec2::ZERO).min(target_size);
-            let clip_max = clip.max.as_uvec2().max(clip_min).min(target_size);
-            let clip_size = clip_max - clip_min;
-
-            // let clip_min = clip.min.as_uvec2().clamp(Vec2::ZERO, target_size);
-            // let clip_size = clip.size().as_uvec2().clamp(Vec2::ZERO, target_size);
-            rpass.set_scissor_rect(clip_min.x, clip_min.y, clip_size.x, clip_size.y);
-
-            let idx_offset = call.idx_ptr as u32;
-            let vtx_offset = call.vtx_ptr as i32;
-            let n_idx = call.n_idx as u32;
-            rpass.draw_indexed(idx_offset..idx_offset + n_idx, vtx_offset, 0..1);
-        }
     }
 
     fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {
@@ -3172,8 +3172,8 @@ impl DrawCallList {
     }
 
     pub fn new(max_vtx_per_chunk: usize, max_idx_per_chunk: usize) -> Self {
-        let max_idx_per_chunk = usize::MAX;
-        let max_vtx_per_chunk = usize::MAX;
+        // let max_idx_per_chunk = usize::MAX;
+        // let max_vtx_per_chunk = usize::MAX;
         Self {
             max_vtx_per_chunk,
             max_idx_per_chunk,

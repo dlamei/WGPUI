@@ -385,7 +385,7 @@ impl App {
         let ui = &mut self.ui;
         ui.begin_frame();
 
-        ui.begin_ex("Debug", ui::PanelFlag::NO_TITLEBAR);
+        ui.begin_ex("Debug", ui::PanelFlag::NO_DOCK_TARGET | ui::PanelFlag::NO_DOCKING);
         ui.set_current_panel_min_size(|prev, full, content| full);
 
         if ui.button("create panel") {

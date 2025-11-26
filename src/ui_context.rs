@@ -358,7 +358,7 @@ impl Context {
             keyboard::{KeyCode, PhysicalKey},
         };
 
-        if !matches!(key.state, ElementState::Pressed) {
+        if !matches!(key.state, ElementState::Pressed) || self.active_id.is_null() {
             return;
         }
 
@@ -366,7 +366,7 @@ impl Context {
         let shift = self.modifiers.shift_key();
 
         match key.physical_key {
-            PhysicalKey::Code(KeyCode::Tab) if !self.active_id.is_null() => {
+            PhysicalKey::Code(KeyCode::Tab) => {
                 if shift {
                     self.kb_focus_prev_item = true;
                 } else {
@@ -1143,7 +1143,11 @@ impl Context {
                     0
                 };
 
-                if !flags.has(PanelFlag::NO_DOCKING)
+                let target_flags = flags;
+                let docking_flags = self.panels[*id].flags;
+
+                if !target_flags.has(PanelFlag::NO_DOCK_TARGET)
+                    && !docking_flags.has(PanelFlag::NO_DOCKING)
                     && curr_draw_order < moving_draw_order
                     && (curr_draw_order > dock_target_draw_order || dock_target.is_null())
                     && !*cancelled_docking
@@ -2963,7 +2967,7 @@ impl Context {
     pub fn begin_child(&mut self, name: &str) {
         let id = self.gen_id(name);
         let panel_flags = PanelFlag::NO_TITLEBAR
-            | PanelFlag::NO_DOCKING
+            | PanelFlag::NO_DOCK_TARGET
             | PanelFlag::USE_PARENT_DRAWLIST
             | PanelFlag::DRAW_V_SCROLLBAR
             | PanelFlag::USE_PARENT_CLIP
@@ -3032,7 +3036,7 @@ impl Context {
 
         // NO_MOVE because the window panel dragging is handled by the window,
         // not the panel
-        let mut flags = PanelFlag::NO_FOCUS | PanelFlag::NO_MOVE | PanelFlag::NO_DOCKING;
+        let mut flags = PanelFlag::NO_FOCUS | PanelFlag::NO_MOVE | PanelFlag::NO_DOCK_TARGET;
 
         if self.window.is_decorated() {
             flags |= PanelFlag::NO_TITLEBAR;
@@ -3209,6 +3213,12 @@ impl Context {
         self.move_down(10.0);
 
         if self.tabitem("Style Settings") {
+
+            let mut is_decorated = self.window.is_decorated();
+            if self.checkbox("custom titlebar", &mut is_decorated) {
+                self.window.set_window_decorations(is_decorated);
+            }
+
             let mut v = self.style.titlebar_height();
             self.input_slider_f32("titlebar height", 0.0, 100.0, &mut v);
             self.style.set_var(StyleVar::TitlebarHeight(v));
@@ -3509,48 +3519,48 @@ impl Context {
         }
     }
 
-    pub fn upload_draw_data(&mut self) {
-        let draw_buff = &mut self.draw.call_list;
-        if draw_buff.vtx_alloc.len() * std::mem::size_of::<ui::Vertex>()
-            > self.draw.gpu_vertices.size() as usize
-        {
-            self.draw.gpu_vertices =
-                self.draw
-                    .wgpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("draw_list_vertex_buffer"),
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-                        contents: bytemuck::cast_slice(&draw_buff.vtx_alloc),
-                    });
-        } else {
-            self.wgpu.queue.write_buffer(
-                &self.draw.gpu_vertices,
-                0,
-                bytemuck::cast_slice(&draw_buff.vtx_alloc),
-            );
-        }
+    // pub fn upload_draw_data(&mut self) {
+    //     let draw_buff = &mut self.draw.call_list;
+    //     if draw_buff.vtx_alloc.len() * std::mem::size_of::<ui::Vertex>()
+    //         > self.draw.gpu_vertices.size() as usize
+    //     {
+    //         self.draw.gpu_vertices =
+    //             self.draw
+    //                 .wgpu
+    //                 .device
+    //                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //                     label: Some("draw_list_vertex_buffer"),
+    //                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+    //                     contents: bytemuck::cast_slice(&draw_buff.vtx_alloc),
+    //                 });
+    //     } else {
+    //         self.wgpu.queue.write_buffer(
+    //             &self.draw.gpu_vertices,
+    //             0,
+    //             bytemuck::cast_slice(&draw_buff.vtx_alloc),
+    //         );
+    //     }
 
-        if self.draw.call_list.idx_alloc.len() * std::mem::size_of::<u32>()
-            > self.draw.gpu_indices.size() as usize
-        {
-            self.draw.gpu_indices =
-                self.draw
-                    .wgpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("draw_list_index_buffer"),
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
-                        contents: bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
-                    });
-        } else {
-            self.wgpu.queue.write_buffer(
-                &self.draw.gpu_indices,
-                0,
-                bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
-            );
-        }
-    }
+    //     if self.draw.call_list.idx_alloc.len() * std::mem::size_of::<u32>()
+    //         > self.draw.gpu_indices.size() as usize
+    //     {
+    //         self.draw.gpu_indices =
+    //             self.draw
+    //                 .wgpu
+    //                 .device
+    //                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //                     label: Some("draw_list_index_buffer"),
+    //                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+    //                     contents: bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
+    //                 });
+    //     } else {
+    //         self.wgpu.queue.write_buffer(
+    //             &self.draw.gpu_indices,
+    //             0,
+    //             bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
+    //         );
+    //     }
+    // }
 
     // pub fn build_draw_list(draw_buff: &mut DrawCallList, draw_list: &DrawList, screen_size: Vec2) {
     //     // let draw_list = self.panels[id].draw_list.borrow();
@@ -3628,7 +3638,7 @@ impl Context {
             self.draw.push_drawlist(&p.drawlist_over);
             // Self::build_draw_list(&mut self.draw.call_list, &p.drawlist_over, self.draw.screen_size);
         }
-        self.upload_draw_data();
+        // self.upload_draw_data();
 
         // let panels = &self.panels;
         // let draw_buff = &mut self.draw.call_list;
@@ -3665,6 +3675,6 @@ impl Context {
             let draw_list = &p.drawlist;
             Self::build_debug_draw_list(draw_buff, &draw_list, self.draw.screen_size);
         }
-        self.upload_draw_data();
+        // self.upload_draw_data();
     }
 }

@@ -146,6 +146,7 @@ impl ui::Context {
     }
 
     pub fn checkbox(&mut self, label: &str, b: &mut bool) -> bool {
+        let prev_b = *b;
         let id = self.gen_id(label);
         let active = self.style.btn_press();
         let hover = self.style.btn_hover();
@@ -189,7 +190,7 @@ impl ui::Context {
         self.same_line();
         self.text(label);
 
-        *b
+        *b != prev_b
     }
 
     pub fn separator_h(&mut self, thickness: f32, fill: RGBA) {

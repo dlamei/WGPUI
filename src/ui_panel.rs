@@ -23,6 +23,7 @@ macros::flags!(PanelFlag:
     ONLY_MOVE_FROM_TITLEBAR,
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
+    NO_DOCK_TARGET,
     NO_DOCKING,
     DOCK_OVER,
     ONLY_DOCK_OVER,
