@@ -45,7 +45,7 @@ jobs:
 
       - name: Build the Rust WASM app and assets
         run: |
-          ./trunk build src/index.html --public-url ./ --release --features webgl 
+          ./trunk build src/index.html --public-url ./ --release --features=webgl 
 
       - name: Configure Pages
         uses: actions/configure-pages@v4
