@@ -2906,7 +2906,7 @@ pub mod phosphor_font {
 // BEGIN RENDER
 //---------------------------------------------------------------------------------------
 
-pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 3;
+pub const MAX_N_TEXTURES_PER_DRAW_CALL: usize = 8;
 
 pub struct RenderData {
     pub gpu_vertices: wgpu::Buffer,
@@ -2917,7 +2917,8 @@ pub struct RenderData {
 
     pub antialias: bool,
 
-    pub glyph_texture: gpu::Texture,
+    pub white_texture: gpu::Texture,
+    // pub glyph_texture: gpu::Texture,
     /// registered textures
     /// 
     /// texture id is defined as the index + 1 in this array, 0 is reserved for white texture
@@ -2940,6 +2941,8 @@ impl RenderData {
         // let mut icon_font_db = ctext::fontdb::Database::new();
         // icon_font_db.load_font_data(include_bytes!("../res/Phosphor.ttf").to_vec());
 
+        let white_texture = gpu::Texture::create_with_usage(&wgpu, 1, 1, wgpu::TextureUsages::TEXTURE_BINDING, &[255, 255, 255, 255]);
+
         let gpu_vertices = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("draw_list_vertex_buffer"),
             size: std::mem::size_of::<Vertex>() as u64 * Self::MAX_VERTEX_COUNT,
@@ -2954,7 +2957,7 @@ impl RenderData {
             mapped_at_creation: false,
         });
 
-        let texture_reg = vec![glyph_texture.clone()];
+        let texture_reg = vec![glyph_texture];
 
         Self {
             gpu_vertices,
@@ -2965,7 +2968,7 @@ impl RenderData {
                 Self::MAX_VERTEX_COUNT as usize,
                 Self::MAX_INDEX_COUNT as usize,
             ),
-            glyph_texture,
+            white_texture,
             texture_reg,
             wgpu,
         }
@@ -3085,8 +3088,8 @@ impl RenderPassHandle for RenderData {
             .map(|&tex_id| self.texture_reg[tex_id as usize - 1].view().clone())
             .collect::<Vec<_>>();
 
-        while tex_views.len() < 3 {
-            tex_views.push(self.glyph_texture.view().clone());
+        while tex_views.len() < MAX_N_TEXTURES_PER_DRAW_CALL {
+            tex_views.push(self.white_texture.view().clone());
         }
 
 
@@ -3102,7 +3105,10 @@ impl RenderPassHandle for RenderData {
         rpass.set_bind_group(0, &bind_group, &[]);
         rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
         rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);
-        rpass.set_pipeline(&UiShader.get_pipeline(&[(&Vertex::desc(), "Vertex")], wgpu));
+        
+        let desc = Vertex::desc();
+        let config = gpu::ShaderBuildConfig::new([(&desc, "Vertex")]);
+        rpass.set_pipeline(&UiShader.get_pipeline(config, wgpu));
 
         let target_size = self.screen_size.as_uvec2();
         let clip_min = clip.min.as_uvec2().max(UVec2::ZERO).min(target_size);
@@ -3365,7 +3371,7 @@ pub struct UiShader;
 impl gpu::ShaderHandle for UiShader {
     const RENDER_PIPELINE_ID: gpu::ShaderID = "ui_shader";
 
-    fn build_pipeline(&self, desc: &gpu::ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
+    fn build_pipeline<const N: usize>(&self, config: gpu::ShaderBuildConfig<'_, N>, wgpu: &WGPU) -> wgpu::RenderPipeline {
         const SHADER_SRC: &str = r#"
 
 
@@ -3411,12 +3417,7 @@ impl gpu::ShaderHandle for UiShader {
             @group(0) @binding(1)
             var samp: sampler;
 
-            @group(0) @binding(2)
-            var tex1: texture_2d<f32>;
-            @group(0) @binding(3)
-            var tex2: texture_2d<f32>;
-            @group(0) @binding(4)
-            var tex3: texture_2d<f32>;
+            @rust texture_bindings;
 
 
             @fragment
@@ -3424,28 +3425,15 @@ impl gpu::ShaderHandle for UiShader {
                 
                 if in.tex == 0 {
                     return in.color;
-                } else if in.tex == 1 {
-                    let c0 = textureSample(tex1, samp, in.uv) * in.color;
-                    return c0;
-                } else if in.tex == 2 {
-                    let c0 = textureSample(tex2, samp, in.uv) * in.color;
-                    return c0;
-                } else if in.tex == 3 {
-                    let c0 = textureSample(tex3, samp, in.uv) * in.color;
-                    return c0;
-                } else {
-                    // TODO: assert in debug mode?
-                    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
                 }
 
-                //let c0 = textureSample(texture, samp, in.uv) * in.color;
-                //let c1 = in.color;
-                //return select(c0, c1, in.tex != 1);
+                @rust texture_fetch;
             }
             "#;
 
-        let bind_group_entries = [
-            // global uniform
+
+        let mut bind_group_entries = vec![
+            //global uniform
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -3462,42 +3450,21 @@ impl gpu::ShaderHandle for UiShader {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
-            },
-            // texture 1
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-
-            // texture 2
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            // texture 3
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
+            },  
         ];
+
+        for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+            bind_group_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (i + 2) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
 
         let global_bind_group_layout =
             wgpu.device
@@ -3506,8 +3473,29 @@ impl gpu::ShaderHandle for UiShader {
                     label: Some("global_bind_group_layout"),
                 });
 
-        let shader_src = gpu::pre_process_shader_code(SHADER_SRC, &desc).unwrap();
-        let vertices = desc.iter().map(|d| d.0).collect::<Vec<_>>();
+        let mut shader_src = gpu::pre_process_shader_code(SHADER_SRC, &config.shader_templates).unwrap();
+
+        let mut rust_texture_bindings = String::new();
+        let mut rust_texture_fetch = String::new();
+        for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+            rust_texture_bindings.push_str(&format!("
+                @group(0) @binding({})
+                var tex{}: texture_2d<f32>;
+            ", i + 2, i + 1));
+
+            rust_texture_fetch.push_str(&format!("
+                else if in.tex == {}u {{
+                    let c{} = textureSample(tex{}, samp, in.uv) * in.color;
+                    return c{};
+                }}", i + 1, i + 1, i + 1, i + 1));
+        }
+
+        rust_texture_fetch.push_str("else { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }");
+
+        shader_src = shader_src.replace("@rust texture_bindings;", &rust_texture_bindings);
+        shader_src = shader_src.replace("@rust texture_fetch;", &rust_texture_fetch);
+
+        let vertices = config.shader_templates.iter().map(|d| d.0).collect::<Vec<_>>();
         gpu::PipelineBuilder::new(&shader_src, wgpu.surface_format)
             .label("rect_pipeline")
             .vertex_buffers(&vertices)
@@ -3629,7 +3617,8 @@ pub fn build_bind_group(
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    let layout_entries = [
+
+        let mut layout_entries = vec![
         // global uniform
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -3648,40 +3637,21 @@ pub fn build_bind_group(
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
-        // texture 1
-        wgpu::BindGroupLayoutEntry {
-            binding: 2,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        },
-        // texture 2
-        wgpu::BindGroupLayoutEntry {
-            binding: 3,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        },
-        // texture 3
-        wgpu::BindGroupLayoutEntry {
-            binding: 4,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        },
     ];
+
+    for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: (i + 2) as u32,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+
 
     let global_bind_group_layout =
         wgpu.device
@@ -3698,7 +3668,7 @@ pub fn build_bind_group(
         ..Default::default()
     });
 
-    let group_entries = [
+    let mut group_entries = vec![
         wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -3711,19 +3681,14 @@ pub fn build_bind_group(
             binding: 1,
             resource: wgpu::BindingResource::Sampler(&sampler),
         },
-        wgpu::BindGroupEntry {
-            binding: 2,
-            resource: wgpu::BindingResource::TextureView(&tex_views[0]),
-        },
-        wgpu::BindGroupEntry {
-            binding: 3,
-            resource: wgpu::BindingResource::TextureView(&tex_views[1]),
-        },
-        wgpu::BindGroupEntry {
-            binding: 4,
-            resource: wgpu::BindingResource::TextureView(&tex_views[2]),
-        },
     ];
+
+    for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+        group_entries.push(wgpu::BindGroupEntry {
+            binding: (i + 2) as u32,
+            resource: wgpu::BindingResource::TextureView(&tex_views[i]),
+        });
+    }
 
     wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("global_bind_group"),

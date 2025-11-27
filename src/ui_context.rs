@@ -8,14 +8,11 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{
-        id_type, stacked_fields_struct, ArrVec, Axis, DataMap, Dir, HashMap, HashSet, Instant, RGBA
-    }, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, ui::{
-        self, CornerRadii, DockNodeFlag, DockNodeKind, DockTree, DrawCallList, DrawList,
-        DrawableRects, FontTable, GlyphCache, Id, IdMap, ItemFlags, RenderData, NextPanelData,
-        Outline, Panel, PanelAction, PanelFlag, PrevItemData, RootId, ShapedText, Signal,
-        StyleTable, StyleVar, TabBar, TextInputFlags, TextInputState, TextItem, TextItemCache, TextureId,
-    }, Vertex as VertexTyp
+    Vertex as VertexTyp, core::{
+        ArrVec, Axis, DataMap, Dir, HashMap, HashSet, Instant, RGBA, id_type, stacked_fields_struct
+    }, gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, ui::{
+        self, CornerRadii, DockNodeFlag, DockNodeKind, DockTree, DrawCallList, DrawList, DrawableRects, FontTable, GlyphCache, Id, IdMap, ItemFlags, MAX_N_TEXTURES_PER_DRAW_CALL, NextPanelData, Outline, Panel, PanelAction, PanelFlag, PrevItemData, RenderData, RootId, ShapedText, Signal, StyleTable, StyleVar, TabBar, TextInputFlags, TextInputState, TextItem, TextItemCache, TextureId
+    }
 };
 
 pub fn is_in_resize_region(r: Rect, pnt: Vec2, thr: f32) -> Option<Dir> {
@@ -169,11 +166,6 @@ pub struct Context {
 
     pub window_panel_id: Id,
 
-    // /// registered textures
-    // /// 
-    // /// texture id is defined as the index + 1 in this array, 0 is reserved for white texture
-    // pub texture_reg: Vec<gpu::Texture>,
-
     // some items can only be interacted with while dragging, e.g. sliders
     // just holding down the mouse will not register as a drag, only a press
     // this flag signals that the current mouse press should be handled as a drag
@@ -230,8 +222,6 @@ impl Context {
             let (w, h, data) = load_window_icon();
             glyph_cache.alloc_data(w, h, &data, &wgpu).unwrap()
         };
-
-        // let white_texture = gpu::Texture::create(&wgpu, 1, 1, &[255, 255, 255, 255]);
 
         Self {
             panels: IdMap::new(),
@@ -3215,6 +3205,7 @@ impl Context {
         if self.tabitem("Style Settings") {
 
             let mut is_decorated = self.window.is_decorated();
+            #[cfg(not(target_arch = "wasm32"))]
             if self.checkbox("custom titlebar", &mut is_decorated) {
                 self.window.set_window_decorations(is_decorated);
             }
@@ -3276,15 +3267,20 @@ impl Context {
         }
 
         if self.tabitem("Textures") {
-            if self.collapsing_header_intern("Font Atlas") {
-                let avail = self.available_content().min(Vec2::splat(800.0));
-                let uv_min = self.glyph_cache.borrow().min_alloc_uv;
-                let uv_max = self.glyph_cache.borrow().max_alloc_uv;
-                let size = uv_max - uv_min;
-                let scale = (avail.x / size.x).min(avail.y / size.y);
-                let fitted_size = size * scale;
-                self.image_id(fitted_size - Vec2::new(20.0, 0.0), uv_min, uv_max, TextureId::GLYPH);
+
+            self.text(&format!("textures per draw call: {}", MAX_N_TEXTURES_PER_DRAW_CALL));
+            self.text(&format!("Registered Textures: {}", self.draw.texture_reg.len()));
+
+            for (id, tex) in self.draw.texture_reg.clone().iter().enumerate() {
+                if self.collapsing_header_intern(&format!("Texture {}", id + 1)) {
+                    let max_side = 100.0; // Largest side for all images
+                    let size = tex.size();
+                    let scale = max_side / size.x.max(size.y);
+                    let fitted_size = size * scale;
+                    self.image(fitted_size, Vec2::ZERO, Vec2::ONE, tex);
+                }
             }
+
         }
 
         if self.tabitem("Debug") {

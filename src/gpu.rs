@@ -79,7 +79,7 @@ impl Texture {
         )
     }
 
-    pub fn cretae_with_usage(wgpu: &WGPU, width: u32, height: u32, usage: wgpu::TextureUsages, data: &[u8]) -> Self {
+    pub fn create_with_usage(wgpu: &WGPU, width: u32, height: u32, usage: wgpu::TextureUsages, data: &[u8]) -> Self {
         assert_eq!((width * height * 4) as usize, data.len());
 
         let texture = Self::create_empty_with_usage(wgpu, width, height, usage | wgpu::TextureUsages::COPY_DST);
@@ -108,7 +108,7 @@ impl Texture {
     }
 
     pub fn create(wgpu: &WGPU, width: u32, height: u32, data: &[u8]) -> Self {
-        Self::cretae_with_usage(
+        Self::create_with_usage(
             wgpu,
             width,
             height,
@@ -123,7 +123,7 @@ impl Texture {
         for byte in &mut data {
             *byte = core::rand_u8();
         }
-        Self::cretae_with_usage(wgpu, width, height, usage, &data)
+        Self::create_with_usage(wgpu, width, height, usage, &data)
     }
 
     pub fn width(&self) -> u32 {
@@ -152,9 +152,9 @@ pub struct VertexDesc {
 
 /// sync structs tagged with @rust with the provided shader templates
 ///
-pub fn pre_process_shader_code(
+pub fn pre_process_shader_code<const N: usize>(
     code: &str,
-    structs_desc: &ShaderTemplates<'_>, // struct_names: &[&str; N],
+    structs_desc: &ShaderTemplates<'_, N>, // struct_names: &[&str; N],
 ) -> Result<String, String> {
     let reqs = PipelineRequirement::parse_all(code);
 
@@ -830,7 +830,7 @@ pub struct UUID(pub u64);
 
 pub type ShaderID = &'static str;
 
-pub type ShaderTemplates<'a> = [(&'a VertexDesc, &'a str)];
+pub type ShaderTemplates<'a, const N: usize> = [(&'a VertexDesc, &'a str); N];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShaderTyp {
@@ -839,9 +839,29 @@ pub enum ShaderTyp {
     Uniform,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShaderBuildConfig<'a, const N: usize> {
+    pub shader_templates: ShaderTemplates<'a, N>,
+    pub debug: bool,
+}
+
+impl<'a, const N: usize> ShaderBuildConfig<'a, N> {
+    pub fn new(shader_templates: ShaderTemplates<'a, N>) -> Self {
+        Self {
+            shader_templates,
+            debug: cfg!(debug_assertions),
+        }
+    }
+
+    pub fn debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+}
+
 pub trait ShaderHandle {
     const RENDER_PIPELINE_ID: ShaderID;
-    fn build_pipeline(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline;
+    fn build_pipeline<const N: usize>(&self, config: ShaderBuildConfig<'_, N>, wgpu: &WGPU) -> wgpu::RenderPipeline;
 
     fn pipeline_generic_id() -> UUID {
         use std::hash::{Hash, Hasher};
@@ -850,11 +870,11 @@ pub trait ShaderHandle {
         UUID(hasher.finish())
     }
 
-    fn pipeline_vertex_id(desc: &ShaderTemplates<'_>) -> UUID {
+    fn pipeline_vertex_id<const N: usize>(config: ShaderBuildConfig<'_, N>) -> UUID {
         use std::hash::{Hash, Hasher};
         let mut hasher = ahash::AHasher::default();
         Self::RENDER_PIPELINE_ID.hash(&mut hasher);
-        for (d, _) in desc {
+        for (d, _) in config.shader_templates {
             d.attributes.hash(&mut hasher);
             d.members.hash(&mut hasher);
         }
@@ -865,30 +885,30 @@ pub trait ShaderHandle {
         false
     }
 
-    fn try_rebuild(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) {
+    fn try_rebuild<const N: usize>(&self, config: ShaderBuildConfig<'_, N>, wgpu: &WGPU) {
         log::info!(
             "[pipeline] {}: rebuild for vertex ({:?})",
             Self::RENDER_PIPELINE_ID,
-            desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
+            config.shader_templates.iter().map(|d| d.0.label).collect::<Vec<_>>(),
         );
         wgpu.register_pipeline(
-            Self::pipeline_vertex_id(desc),
-            self.build_pipeline(desc, wgpu),
+            Self::pipeline_vertex_id(config),
+            self.build_pipeline(config, wgpu),
         );
     }
 
-    fn get_pipeline(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+    fn get_pipeline<const N: usize>(&self, config: ShaderBuildConfig<'_, N>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
         if self.should_rebuild() {
-            self.try_rebuild(desc, wgpu);
+            self.try_rebuild(config, wgpu);
         }
 
-        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id(desc), || {
+        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id(config), || {
             log::info!(
                 "[pipeline] {}: build for vertex ({:?})",
                 Self::RENDER_PIPELINE_ID,
-                desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
+                config.shader_templates.iter().map(|d| d.0.label).collect::<Vec<_>>(),
             );
-            self.build_pipeline(desc, wgpu)
+            self.build_pipeline(config, wgpu)
         })
     }
 }

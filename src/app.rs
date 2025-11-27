@@ -10,8 +10,7 @@ use winit::{
 };
 
 use crate::{
-    Vertex, VertexPosCol, build,
-    core::{self, Duration, HashMap, Instant, RGBA},
+    core::{self, Duration, Instant, RGBA},
     gpu::{self, WGPU, WGPUHandle, Window, WindowId},
     mouse::{self, MouseBtn},
     rect::Rect,
@@ -248,8 +247,8 @@ impl App {
         let dbg_tex = [0; 4].map(|_| {
             gpu::Texture::random(
                 &wgpu,
-                16,
-                16,
+                8,
+                8,
                  wgpu::TextureUsages::TEXTURE_BINDING,
             )
         });
